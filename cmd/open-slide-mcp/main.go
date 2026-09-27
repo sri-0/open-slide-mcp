@@ -17,11 +17,11 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/prismgroup/open-slide-mcp/internal/config"
-	"github.com/prismgroup/open-slide-mcp/internal/devserver"
-	"github.com/prismgroup/open-slide-mcp/internal/mcpserver"
-	"github.com/prismgroup/open-slide-mcp/internal/proxy"
-	"github.com/prismgroup/open-slide-mcp/internal/workspace"
+	"github.com/sri-0/open-slide-mcp/internal/config"
+	"github.com/sri-0/open-slide-mcp/internal/devserver"
+	"github.com/sri-0/open-slide-mcp/internal/mcpserver"
+	"github.com/sri-0/open-slide-mcp/internal/proxy"
+	"github.com/sri-0/open-slide-mcp/internal/workspace"
 )
 
 var version = "dev"

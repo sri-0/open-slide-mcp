@@ -1,4 +1,4 @@
-module github.com/prismgroup/open-slide-mcp
+module github.com/sri-0/open-slide-mcp
 
 go 1.25.1
 

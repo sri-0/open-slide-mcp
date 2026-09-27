@@ -12,9 +12,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/prismgroup/open-slide-mcp/internal/skills"
-	"github.com/prismgroup/open-slide-mcp/internal/validate"
-	"github.com/prismgroup/open-slide-mcp/internal/workspace"
+	"github.com/sri-0/open-slide-mcp/internal/skills"
+	"github.com/sri-0/open-slide-mcp/internal/validate"
+	"github.com/sri-0/open-slide-mcp/internal/workspace"
 )
 
 // Deps are the collaborators the tools need.
