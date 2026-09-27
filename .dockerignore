@@ -1,0 +1,6 @@
+bin
+workspace/node_modules
+workspace/dist
+workspace/slides/*
+workspace/.open-slide-mcp
+.git

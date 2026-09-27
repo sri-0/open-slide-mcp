@@ -1,0 +1,7 @@
+/bin
+/workspace/node_modules
+/workspace/dist
+/workspace/slides/*
+!/workspace/slides/.gitkeep
+/workspace/.open-slide-mcp
+.env

@@ -1,0 +1,17 @@
+services:
+  open-slide-mcp:
+    build: .
+    image: open-slide-mcp:local
+    ports:
+      - "8090:8090"
+    environment:
+      PUBLIC_URL: http://localhost:8090
+      PREVIEW_AUTH: "false"
+      DECK_TTL: 24h
+      LOG_LEVEL: info
+    volumes:
+      - slides:/app/workspace/slides
+      - meta:/app/workspace/.open-slide-mcp
+volumes:
+  slides:
+  meta:

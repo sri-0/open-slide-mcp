@@ -1,0 +1,5 @@
+node_modules
+dist
+slides/*
+!slides/.gitkeep
+.open-slide-mcp
