@@ -56,9 +56,22 @@ func run() error {
 
 	if cfg.ManageDevServer {
 		sup := &devserver.Supervisor{Dir: cfg.WorkspaceDir, Host: cfg.ViteHost, Port: cfg.VitePort, Log: log}
+		supDone := make(chan struct{})
 		go func() {
+			defer close(supDone)
 			if err := sup.Run(ctx); err != nil {
 				log.Error("dev server supervisor stopped", "err", err)
+			}
+		}()
+		// Wait for the dev server to be killed before exiting. Otherwise it can
+		// outlive the wrapper and keep the port, so the next start attaches to
+		// the orphan while its own dev server moves to another port.
+		defer func() {
+			stop()
+			select {
+			case <-supDone:
+			case <-time.After(10 * time.Second):
+				log.Warn("dev server did not stop within 10s")
 			}
 		}()
 	}
