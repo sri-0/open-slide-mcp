@@ -26,6 +26,7 @@ var blocked = map[string]bool{
 	"/__restart-server": true,
 	"/__slides":         true,
 	"/__folders":        true,
+	"/__update-package": true, // runs a package-manager update in the workspace
 }
 
 // Proxy is the echo handler set for the dev server.
@@ -37,7 +38,10 @@ type Proxy struct {
 	PublicURL string
 	Secure    bool // mark the cookie Secure; required for SameSite=None
 	OnTouch   func(deckID string)
-	rp        *httputil.ReverseProxy
+	// EmbedOrigins limits which embedding pages may set the theme by
+	// postMessage. Empty accepts any origin.
+	EmbedOrigins []string
+	rp           *httputil.ReverseProxy
 }
 
 // New builds a proxy for the given dev server base URL.
@@ -53,8 +57,13 @@ func New(viteBase string, secret []byte, auth bool, ttl time.Duration, publicURL
 			r.SetURL(target)
 			r.Out.Host = target.Host
 			r.SetXForwarded()
+			if wantsHTML(r.In) {
+				// Ask for an uncompressed page so injectTheme can edit it.
+				r.Out.Header.Del("Accept-Encoding")
+			}
 		},
-		FlushInterval: -1,
+		ModifyResponse: p.injectTheme,
+		FlushInterval:  -1,
 	}
 	return p, nil
 }
@@ -132,7 +141,11 @@ func (p *Proxy) preview(c echo.Context) error {
 	if p.OnTouch != nil {
 		p.OnTouch(deck)
 	}
-	return c.Redirect(http.StatusFound, "/s/"+url.PathEscape(deck))
+	loc := "/s/" + url.PathEscape(deck)
+	if t := c.QueryParam("theme"); themes[t] {
+		loc += "?theme=" + t
+	}
+	return c.Redirect(http.StatusFound, loc)
 }
 
 func (p *Proxy) forward(c echo.Context) error {

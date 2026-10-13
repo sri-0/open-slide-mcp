@@ -39,6 +39,7 @@ Translate the skill's filesystem instructions as follows:
 - If AskUserQuestion is unavailable, ask in plain chat, or make sensible assumptions and state them.
 - deck_write validates the module with the dev server compiler and returns errors. Fix and rewrite until it passes.
 - After writing, tell the user the preview_url returned by deck_create or deck_preview_url.
+- "Previewing a page visually": there is no server.json to read. If you have a browser tool, open the preview_url once, then /s/<deck_id>/preview?p=N on the same host; otherwise skip the visual check.
 
 `
 

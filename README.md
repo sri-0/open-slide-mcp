@@ -48,6 +48,37 @@ make smoke
 
 Slides and metadata live in named volumes so they survive restarts.
 
+## Embed the preview
+
+`preview_url` is meant to be iframed. The embedding page can set the editor's
+light/dark mode in two ways:
+
+- **On load:** add `theme=light|dark|system` to the preview link, e.g.
+  `http://localhost:8090/preview/<deck>?theme=dark` (with `PREVIEW_AUTH` the
+  link already has `?t=…`, so append `&theme=dark`). The redirect to
+  `/s/<deck>` keeps the parameter and the page paints in that theme.
+- **Live:** post a message to the iframe whenever the embedder's theme changes.
+  The editor switches without reloading.
+
+  ```js
+  iframe.contentWindow.postMessage(
+    { type: "open-slide:theme", theme: "dark" }, // "light" | "dark" | "system"
+    new URL(previewUrl).origin,
+  );
+  ```
+
+A message only reaches a loaded page, so rely on `?theme=` for the first paint
+(or post again from the iframe's `load` handler). Any other `theme` value, and
+any other message, is ignored. Set
+`EMBED_ORIGINS` to accept theme messages only from the listed embedder origins.
+
+open-slide itself only reads the theme from `localStorage["theme"]`, so the
+wrapper injects a small script at the top of every HTML page it proxies: it
+stores the parameter or message value there and fires the `storage` event the
+UI listens for. The value persists for the wrapper's origin, so opening the
+editor directly afterwards uses the last theme set. Browsers that partition
+storage in cross-site iframes keep a separate value per embedding site.
+
 ## Connect opencode
 
 Add to `~/.config/opencode/opencode.json` (`make opencode-config` prints it):
@@ -77,11 +108,28 @@ call `skill_read` for `slide-authoring`, then `deck_create` with a thread id.
 | `PREVIEW_TTL` | `12h` | token lifetime |
 | `DECK_TTL` | `24h` | idle deck lifetime; `0` disables sweeping |
 | `SWEEP_INTERVAL` | `10m` | sweeper cadence |
+| `EMBED_ORIGINS` | empty | comma-separated origins (e.g. `http://localhost:3000`) allowed to set the theme by `postMessage`; empty accepts any origin |
 
 With `PREVIEW_AUTH=true` the preview link carries a token, the proxy exchanges
 it for a cookie scoped to that deck, and `/s/<other-deck>` is refused. The
-dev-server endpoints that restart the process or create and delete slides from
-the browser are always blocked.
+dev-server endpoints that restart the process, update packages, or create and
+delete slides from the browser are always blocked.
+
+## Upgrade open-slide
+
+The workspace pins `@open-slide/core` in `workspace/package.json` and
+`workspace/pnpm-lock.yaml` (currently 2.2.0). To move to a newer release:
+
+```
+cd workspace
+pnpm up "@open-slide/core@^<version>"
+pnpm sync:skills                  # refreshes .agents/skills; delete the .claude/ symlinks it creates
+cd .. && rsync -a --delete workspace/.agents/skills/ internal/skills/data/
+make test && make run && make smoke
+```
+
+`internal/skills/data` is the copy served by `skill_read`; the MCP preface in
+`internal/skills/skills.go` maps the skills' filesystem steps onto the tools.
 
 ## Limits
 

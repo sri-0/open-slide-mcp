@@ -71,6 +71,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	px.EmbedOrigins = cfg.EmbedOrigins
 
 	srv, err := mcpserver.New(mcpserver.Deps{Store: store, ViteBase: cfg.ViteBase(), PreviewURL: px.PreviewURL, Log: log, Version: version})
 	if err != nil {
@@ -121,7 +122,7 @@ func run() error {
 		}()
 	}
 
-	log.Info("listening", "addr", cfg.ListenAddr, "mcp", cfg.MCPPath, "public_url", cfg.PublicURL, "preview_auth", cfg.PreviewAuth, "transport", cfg.Transport)
+	log.Info("listening", "addr", cfg.ListenAddr, "mcp", cfg.MCPPath, "public_url", cfg.PublicURL, "preview_auth", cfg.PreviewAuth, "embed_origins", cfg.EmbedOrigins, "transport", cfg.Transport)
 	if err := e.Start(cfg.ListenAddr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

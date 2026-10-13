@@ -28,6 +28,7 @@ type Config struct {
 	PreviewTTL      time.Duration // lifetime of a preview token and its cookie
 	DeckTTL         time.Duration // decks idle longer than this are swept; 0 disables sweeping
 	SweepInterval   time.Duration // how often the sweeper runs
+	EmbedOrigins    []string      // origins allowed to set the theme by postMessage; empty allows any
 	LogLevel        string
 }
 
@@ -46,6 +47,7 @@ func FromEnv() (*Config, error) {
 		PreviewTTL:      getenvDuration("PREVIEW_TTL", 12*time.Hour),
 		DeckTTL:         getenvDuration("DECK_TTL", 24*time.Hour),
 		SweepInterval:   getenvDuration("SWEEP_INTERVAL", 10*time.Minute),
+		EmbedOrigins:    getenvList("EMBED_ORIGINS"),
 		LogLevel:        getenv("LOG_LEVEL", "info"),
 	}
 	abs, err := filepath.Abs(c.WorkspaceDir)
@@ -81,6 +83,17 @@ func getenv(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// getenvList splits a comma-separated variable, dropping blanks and trailing slashes.
+func getenvList(k string) []string {
+	var out []string
+	for _, v := range strings.Split(os.Getenv(k), ",") {
+		if v = strings.TrimRight(strings.TrimSpace(v), "/"); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func getenvInt(k string, def int) int {
