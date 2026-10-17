@@ -28,7 +28,8 @@ browser / iframe            --preview link-------> :8090/preview/<deck>  --> vit
 Skills are also published as resources (`openslide://skills/<name>`) and there
 is a `create-slide` prompt that bundles the workflow and the reference.
 
-Idle decks are swept after `DECK_TTL` (default 24h).
+Decks are kept until deleted (`deck_delete`, `thread_cleanup`); set `DECK_TTL` to
+sweep decks idle for longer than it.
 
 ## Run locally
 
@@ -106,7 +107,7 @@ call `skill_read` for `slide-authoring`, then `deck_create` with a thread id.
 | `PREVIEW_AUTH` | `false` | require signed tokens for the preview UI |
 | `PREVIEW_SECRET` | random | HMAC key for tokens; set it for stable links across restarts |
 | `PREVIEW_TTL` | `12h` | token lifetime |
-| `DECK_TTL` | `24h` | idle deck lifetime; `0` disables sweeping |
+| `DECK_TTL` | `0` | idle deck lifetime; `0` keeps decks until deleted |
 | `SWEEP_INTERVAL` | `10m` | sweeper cadence |
 | `EMBED_ORIGINS` | empty | comma-separated origins (e.g. `http://localhost:3000`) allowed to set the theme by `postMessage`; empty accepts any origin |
 

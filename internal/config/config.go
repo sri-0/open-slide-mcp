@@ -26,7 +26,7 @@ type Config struct {
 	PreviewAuth     bool          // require a signed token to reach the proxied dev server
 	PreviewSecret   []byte        // HMAC key for preview tokens
 	PreviewTTL      time.Duration // lifetime of a preview token and its cookie
-	DeckTTL         time.Duration // decks idle longer than this are swept; 0 disables sweeping
+	DeckTTL         time.Duration // decks idle longer than this are swept; 0, the default, keeps them
 	SweepInterval   time.Duration // how often the sweeper runs
 	EmbedOrigins    []string      // origins allowed to set the theme by postMessage; empty allows any
 	LogLevel        string
@@ -45,7 +45,7 @@ func FromEnv() (*Config, error) {
 		ManageDevServer: getenvBool("MANAGE_DEVSERVER", true),
 		PreviewAuth:     getenvBool("PREVIEW_AUTH", false),
 		PreviewTTL:      getenvDuration("PREVIEW_TTL", 12*time.Hour),
-		DeckTTL:         getenvDuration("DECK_TTL", 24*time.Hour),
+		DeckTTL:         getenvDuration("DECK_TTL", 0),
 		SweepInterval:   getenvDuration("SWEEP_INTERVAL", 10*time.Minute),
 		EmbedOrigins:    getenvList("EMBED_ORIGINS"),
 		LogLevel:        getenv("LOG_LEVEL", "info"),
