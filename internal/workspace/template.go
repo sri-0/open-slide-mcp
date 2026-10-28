@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"fmt"
+	"html"
+	"html/template"
 	"strings"
 	"time"
 )
@@ -10,7 +12,7 @@ import (
 // without source. It follows the open-slide file contract so the agent can
 // see the preview immediately and then replace it with deck_write.
 func StarterTSX(title string, createdAt time.Time) string {
-	esc := strings.NewReplacer("\\", "\\\\", "'", "\\'").Replace(title)
+	esc := template.JSEscapeString(title)
 	return fmt.Sprintf(`import type { DesignSystem, Page, SlideMeta } from '@open-slide/core';
 
 export const meta: SlideMeta = {
@@ -55,6 +57,7 @@ export default [Cover] satisfies Page[];
 `, esc, createdAt.UTC().Format(time.RFC3339), htmlEscape(title))
 }
 
+// htmlEscape makes a title safe as JSX text, where braces open expressions.
 func htmlEscape(s string) string {
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "{", "&#123;", "}", "&#125;").Replace(s)
+	return strings.NewReplacer("{", "&#123;", "}", "&#125;").Replace(html.EscapeString(s))
 }

@@ -57,11 +57,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	var lvl slog.Level
-	if err := lvl.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
-		lvl = slog.LevelInfo
-	}
-	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(log)
 
 	store, err := workspace.Open(cfg.WorkspaceDir)
@@ -95,11 +91,11 @@ func run() error {
 		return err
 	}
 	broker := events.New()
-	deps := build.Deps{Store: store, Compiler: comp, Events: broker}
+	deps := build.Builder{Store: store, Compiler: comp, Events: broker}
 
 	var ed http.Handler
 	if cfg.SidecarDir != "" {
-		sc := &editor.Sidecar{Dir: cfg.SidecarDir, Addr: cfg.SidecarAddr, Log: log}
+		sc := editor.NewSidecar(cfg.SidecarDir, cfg.SidecarAddr, log)
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -115,10 +111,10 @@ func run() error {
 				log.Warn("sidecar did not stop within 10s")
 			}
 		}()
-		if err := editor.WaitReady(ctx, "http://"+cfg.SidecarAddr, 30*time.Second); err != nil {
+		if err := sc.WaitReady(ctx, 30*time.Second); err != nil {
 			return err
 		}
-		ed = editor.New(editor.Editor{Build: deps, Sidecar: "http://" + cfg.SidecarAddr, Log: log})
+		ed = &editor.Editor{Build: builder, Apply: sc, Log: log}
 		log.Info("editing enabled", "sidecar", cfg.SidecarAddr)
 	} else {
 		log.Warn("SIDECAR_DIR is empty: decks are viewable but browser edits are off")
@@ -135,7 +131,7 @@ func run() error {
 		log.Warn("EMBED_ORIGINS is empty: any site may embed decks and set their theme")
 	}
 
-	srv, err := mcpserver.New(mcpserver.Deps{Store: store, Build: deps, PreviewURL: sh.PreviewURL, Disabled: cfg.MCPToolsOff, Log: log, Version: version})
+	srv, err := mcpserver.New(mcpserver.Deps{Store: store, Build: builder, PreviewURL: sh.PreviewURL, ToolsDisabled: cfg.ToolsDisabled, Log: log, Version: version})
 	if err != nil {
 		return err
 	}
@@ -187,7 +183,7 @@ func run() error {
 		}()
 	}
 
-	log.Info("listening", "addr", cfg.ListenAddr, "mcp", cfg.MCPPath, "mcp_auth", cfg.MCPAuth, "tools_disabled", cfg.MCPToolsOff, "deck_origin", cfg.DeckOrigin, "embed_origins", cfg.EmbedOrigins, "transport", cfg.Transport)
+	log.Info("listening", "addr", cfg.ListenAddr, "mcp", cfg.MCPPath, "mcp_auth", cfg.MCPAuth, "tools_disabled", cfg.ToolsDisabled, "deck_origin", cfg.DeckOrigin, "embed_origins", cfg.EmbedOrigins, "transport", cfg.Transport)
 	if err := e.Start(cfg.ListenAddr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

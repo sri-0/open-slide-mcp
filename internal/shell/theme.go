@@ -16,8 +16,8 @@ import (
 // themes are the values accepted from ?theme= and from theme messages.
 var themes = map[string]bool{"light": true, "dark": true, "system": true}
 
-// ThemeMessageType is the postMessage type an embedding page sends.
-const ThemeMessageType = "open-slide:theme"
+// themeMessageType is the postMessage type an embedding page sends.
+const themeMessageType = "open-slide:theme"
 
 // headRe matches the opening <head> tag (not <header>).
 var headRe = regexp.MustCompile(`(?i)<head(\s[^>]*)?>`)
@@ -33,13 +33,13 @@ func themeScript(allowed []string) []byte {
 	return []byte(`<script>
 // Injected by open-slide-mcp so an embedding page can set the editor theme.
 // open-slide reads only localStorage "theme": ?theme= seeds it before the
-// pre-paint script runs, and a {type:"` + ThemeMessageType + `",theme} message updates
+// pre-paint script runs, and a {type:"` + themeMessageType + `",theme} message updates
 // it live through the storage event next-themes listens for.
 (function(){var ok=["light","dark","system"],allow=` + string(origins) + `;
 function set(t){try{localStorage.setItem("theme",t)}catch(e){}}
 var q=new URLSearchParams(location.search).get("theme");if(ok.indexOf(q)>=0)set(q);
 addEventListener("message",function(e){var d=e.data;
-if(!d||d.type!=="` + ThemeMessageType + `"||ok.indexOf(d.theme)<0)return;
+if(!d||d.type!=="` + themeMessageType + `"||ok.indexOf(d.theme)<0)return;
 if(allow.length&&allow.indexOf(e.origin)<0)return;
 set(d.theme);dispatchEvent(new StorageEvent("storage",{key:"theme",newValue:d.theme}));});})();
 </script>`)

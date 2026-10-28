@@ -10,13 +10,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/sri-0/open-slide-mcp/internal/build"
 	"github.com/sri-0/open-slide-mcp/internal/shell"
@@ -24,19 +21,20 @@ import (
 
 // Editor is the http.Handler the shell mounts under /__.
 type Editor struct {
-	Build   build.Deps
-	Sidecar string // base URL of the sidecar, e.g. http://127.0.0.1:8091
-	Log     *slog.Logger
-	client  *http.Client
+	Build build.Builder
+	Apply Applier // the engine that patches source: the Node sidecar or the embedded interpreter
+	Log   *slog.Logger
 }
 
-// New returns an Editor with a bounded client for the sidecar.
-func New(e Editor) *Editor {
-	e.client = &http.Client{Timeout: 15 * time.Second}
-	return &e
+// Applier applies one editor request to a deck's source. Both engines run
+// open-slide's own editing functions on the same bundle; they differ only
+// in where that JavaScript runs.
+type Applier interface {
+	Apply(ctx context.Context, req Request) (Response, error)
 }
 
-type applyRequest struct {
+// Request is one editor save call with the source it applies to.
+type Request struct {
 	Method string            `json:"method"`
 	Path   string            `json:"path"`
 	Query  map[string]string `json:"query"`
@@ -44,7 +42,8 @@ type applyRequest struct {
 	Source string            `json:"source"`
 }
 
-type applyResponse struct {
+// Response is what the browser receives, plus the new source when it changed.
+type Response struct {
 	Status int             `json:"status"`
 	Body   json.RawMessage `json:"body"`
 	Source string          `json:"source,omitempty"`
@@ -64,7 +63,7 @@ func (e *Editor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"folders": []any{}, "assignments": map[string]any{}})
 	case strings.HasPrefix(p, "/__assets/") && r.Method == http.MethodGet && strings.Count(p, "/") == 2:
 		writeJSON(w, http.StatusOK, map[string]any{"assets": []any{}})
-	case strings.HasPrefix(p, "/__slides/") && strings.SplitN(strings.TrimPrefix(p, "/__slides/"), "/", 2)[0] != deck:
+	case strings.HasPrefix(p, "/__slides/") && !strings.HasPrefix(strings.TrimPrefix(p, "/__slides/"), deck+"/"):
 		http.Error(w, "this session only edits its own deck", http.StatusForbidden)
 	case strings.HasPrefix(p, "/__edit"), strings.HasPrefix(p, "/__comments"), strings.HasPrefix(p, "/__design"),
 		strings.HasPrefix(p, "/__notes"), strings.HasPrefix(p, "/__slides/"):
@@ -77,7 +76,7 @@ func (e *Editor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// apply forwards one request and the deck's source to the sidecar and keeps
+// apply hands one request and the deck's source to the engine and keeps
 // whatever source comes back.
 func (e *Editor) apply(w http.ResponseWriter, r *http.Request, deck string) error {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
@@ -102,29 +101,15 @@ func (e *Editor) apply(w http.ResponseWriter, r *http.Request, deck string) erro
 	// The browser addresses the deck by the id it sees; the sidecar only
 	// ever receives the source of the deck the session is for.
 	q["slideId"] = deck
-	reqBody, err := json.Marshal(applyRequest{Method: r.Method, Path: r.URL.Path, Query: q, Body: body, Source: src})
+	out, err := e.Apply.Apply(r.Context(), Request{Method: r.Method, Path: r.URL.Path, Query: q, Body: body, Source: src})
 	if err != nil {
 		return err
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, e.Sidecar+"/apply", bytes.NewReader(reqBody))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := e.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("sidecar: %w", err)
-	}
-	defer resp.Body.Close()
-	var out applyResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&out); err != nil || resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("sidecar returned %d: %w", resp.StatusCode, errors.Join(err, errors.New("unreadable response")))
 	}
 	if out.Source != "" && out.Source != src {
 		if _, _, err := e.Build.Store.Write(deck, out.Source, ""); err != nil {
 			return err
 		}
-		if res := e.Build.Deck(r.Context(), deck, out.Source); !res.OK {
+		if res := e.Build.Build(r.Context(), deck, out.Source); !res.OK {
 			e.Log.Warn("edited deck does not compile", "deck", deck, "msg", res.Message, "line", res.Line)
 		}
 	}
@@ -141,27 +126,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-// WaitReady polls the sidecar until it answers or the deadline passes.
-func WaitReady(ctx context.Context, base string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 2 * time.Second}
-	for {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/healthz", nil)
-		if resp, err := client.Do(req); err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return nil
-			}
-		}
-		if time.Now().After(deadline) {
-			return errors.New("sidecar did not become ready at " + base)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
 }

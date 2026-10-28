@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +56,6 @@ type Store struct {
 	mu       sync.Mutex // guards decks, current and every file write
 	decks    map[string]*Deck
 	current  map[string]Current
-	now      func() time.Time
 }
 
 // Open loads (or creates) the index for the given workspace.
@@ -68,7 +67,6 @@ func Open(root string) (*Store, error) {
 		metaPath: filepath.Join(root, ".open-slide-mcp", "decks.json"),
 		decks:    map[string]*Deck{},
 		current:  map[string]Current{},
-		now:      time.Now,
 	}
 	if err := os.MkdirAll(s.slides, 0o755); err != nil {
 		return nil, err
@@ -95,12 +93,6 @@ func Open(root string) (*Store, error) {
 	return s, s.saveLocked()
 }
 
-// Root returns the workspace directory.
-func (s *Store) Root() string { return s.root }
-
-// IndexPath returns the absolute path of a deck's index.tsx.
-func (s *Store) IndexPath(id string) string { return s.indexPath(id) }
-
 func (s *Store) indexPath(id string) string {
 	return filepath.Join(s.slides, id, "index.tsx")
 }
@@ -121,7 +113,7 @@ func (s *Store) Create(threadID, title, tsx string) (*Deck, string, error) {
 	if err := writeAtomic(s.indexPath(id), []byte(tsx)); err != nil {
 		return nil, "", err
 	}
-	now := s.now().UTC()
+	now := time.Now().UTC()
 	d := &Deck{ID: id, ThreadID: threadID, Title: title, CreatedAt: now, UpdatedAt: now, LastAccess: now}
 	s.decks[id] = d
 	return clone(d), Hash(tsx), s.saveLocked()
@@ -139,10 +131,9 @@ func (s *Store) Read(id string) (*Deck, string, string, []Comment, error) {
 	if err != nil {
 		return nil, "", "", nil, err
 	}
-	d.LastAccess = s.now().UTC()
-	_ = s.saveLocked()
+	d.LastAccess = time.Now().UTC()
 	src := string(b)
-	return clone(d), src, Hash(src), ParseComments(src), nil
+	return clone(d), src, Hash(src), ParseComments(src), s.saveLocked()
 }
 
 // Write replaces the source. If expectedHash is non-empty it must match the
@@ -166,7 +157,7 @@ func (s *Store) Write(id, tsx, expectedHash string) (*Deck, string, error) {
 	if err := writeAtomic(s.indexPath(id), []byte(tsx)); err != nil {
 		return nil, "", err
 	}
-	now := s.now().UTC()
+	now := time.Now().UTC()
 	d.UpdatedAt, d.LastAccess = now, now
 	return clone(d), Hash(tsx), s.saveLocked()
 }
@@ -230,7 +221,7 @@ func (s *Store) Touch(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if d, ok := s.decks[id]; ok {
-		d.LastAccess = s.now().UTC()
+		d.LastAccess = time.Now().UTC()
 		_ = s.saveLocked()
 	}
 }
@@ -245,7 +236,7 @@ func (s *Store) List(threadID string) []*Deck {
 			out = append(out, clone(d))
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	slices.SortFunc(out, func(a, b *Deck) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return out
 }
 
@@ -266,7 +257,7 @@ func (s *Store) DeleteThread(threadID string) ([]string, error) {
 			ids = append(ids, id)
 		}
 	}
-	sort.Strings(ids)
+	slices.Sort(ids)
 	for _, id := range ids {
 		if err := s.deleteLocked(id); err != nil {
 			return ids, err
@@ -282,14 +273,14 @@ func (s *Store) Sweep(ttl time.Duration) ([]string, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cutoff := s.now().Add(-ttl)
+	cutoff := time.Now().Add(-ttl)
 	var ids []string
 	for id, d := range s.decks {
 		if d.LastAccess.Before(cutoff) {
 			ids = append(ids, id)
 		}
 	}
-	sort.Strings(ids)
+	slices.Sort(ids)
 	for _, id := range ids {
 		if err := s.deleteLocked(id); err != nil {
 			return ids, err
@@ -318,7 +309,7 @@ func (s *Store) saveLocked() error {
 	for _, d := range s.decks {
 		list = append(list, d)
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	slices.SortFunc(list, func(a, b *Deck) int { return strings.Compare(a.ID, b.ID) })
 	b, err := json.MarshalIndent(list, "", "  ")
 	if err != nil {
 		return err

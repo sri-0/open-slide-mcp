@@ -40,15 +40,14 @@ type claims struct {
 // Signer issues and checks deck tokens with one HMAC-SHA256 key.
 type Signer struct {
 	secret []byte
-	now    func() time.Time
 }
 
 // New returns a Signer for the given key.
 func New(secret []byte) (*Signer, error) {
 	if len(secret) < 32 {
-		return nil, errors.New("PREVIEW_SECRET must be at least 32 bytes")
+		return nil, errors.New("auth: key must be at least 32 bytes")
 	}
-	return &Signer{secret: secret, now: time.Now}, nil
+	return &Signer{secret: secret}, nil
 }
 
 // Mint returns a signed token for deckID with the given use and lifetime,
@@ -58,7 +57,7 @@ func (s *Signer) Mint(deckID string, use Use, ttl time.Duration) (string, time.T
 	if _, err := rand.Read(jti[:]); err != nil {
 		return "", time.Time{}, err
 	}
-	now := s.now()
+	now := time.Now()
 	exp := now.Add(ttl)
 	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -82,7 +81,6 @@ func (s *Signer) Verify(token string, use Use) (string, error) {
 	_, err := jwt.ParseWithClaims(token, &c, func(*jwt.Token) (any, error) { return s.secret, nil },
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
 		jwt.WithExpirationRequired(),
-		jwt.WithTimeFunc(s.now),
 	)
 	if err != nil || c.Subject == "" || c.Use != use {
 		return "", ErrInvalidToken

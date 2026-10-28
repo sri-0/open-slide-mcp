@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/url"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +28,7 @@ type Config struct {
 	// OIDCAudience, and X-Root-Thread-ID names the owning thread) or "none"
 	// (the endpoint is open and ownership is whatever the caller claims).
 	MCPAuth       string   `env:"MCP_AUTH,default=none"`
-	MCPToolsOff   []string `env:"MCP_TOOLS_DISABLED,default=deck_delete"` // tools that exist but are not offered
+	ToolsDisabled []string `env:"MCP_TOOLS_DISABLED,default=deck_delete"` // tools that exist but are not offered
 	OIDCIssuer    string   `env:"OIDC_ISSUER_URL"`                        // the iss claim tokens must carry
 	OIDCDiscovery string   `env:"OIDC_DISCOVERY_URL"`                     // where provider metadata is fetched when the issuer is not reachable by that name
 	OIDCAudience  string   `env:"OIDC_AUDIENCE"`                          // the aud claim tokens must contain
@@ -56,7 +56,7 @@ type Config struct {
 	DeckTTL       time.Duration `env:"DECK_TTL,default=0"`         // decks idle longer than this are swept; 0 keeps them
 	SweepInterval time.Duration `env:"SWEEP_INTERVAL,default=10m"` // how often the sweeper runs
 	EmbedOrigins  []string      `env:"EMBED_ORIGINS"`              // origins allowed to embed decks and set the theme; empty allows any
-	LogLevel      string        `env:"LOG_LEVEL,default=info"`
+	LogLevel      slog.Level    `env:"LOG_LEVEL,default=info"`
 }
 
 // FromEnv reads the configuration, applying defaults and validating paths.
@@ -85,16 +85,6 @@ func (c *Config) check() error {
 		}
 	default:
 		return fmt.Errorf("MCP_AUTH must be oidc or none, got %q", c.MCPAuth)
-	}
-	// url.Parse rejects braces in a host, so the label is stood in for.
-	u, err := url.Parse(strings.Replace(c.DeckOrigin, "{deck}", "deck", 1))
-	hostMode := strings.Contains(c.DeckOrigin, "://{deck}.") && u != nil && u.Path == ""
-	pathMode := strings.HasSuffix(c.DeckOrigin, "/{deck}") && u != nil && u.Path == "/deck"
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !(hostMode || pathMode) {
-		return errors.New("DECK_ORIGIN must be http(s)://{deck}.<domain>[:port] (one origin per deck) or http(s)://<host>[:port]/{deck} (one shared origin)")
-	}
-	if u.Scheme == "http" && u.Hostname() != "localhost" && !strings.HasSuffix(u.Hostname(), ".localhost") {
-		return errors.New("DECK_ORIGIN must be https unless the host is localhost or ends in .localhost: deck cookies are Secure")
 	}
 	if c.ShellDir, err = filepath.Abs(c.ShellDir); err != nil {
 		return fmt.Errorf("SHELL_DIR: %w", err)

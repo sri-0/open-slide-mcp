@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // Bearer gates the MCP endpoint. With a Verify func, every tools/call must
@@ -36,17 +36,12 @@ func (b Bearer) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		// A batch is an array, which would hide a tools/call from the probe
-		// below; no client of this server needs batches.
-		if t := bytes.TrimSpace(body); len(t) == 0 || t[0] == '[' {
-			http.Error(w, "one JSON-RPC request per POST", http.StatusBadRequest)
-			return
-		}
-		var call struct {
-			Method string `json:"method"`
-		}
-		if err := json.Unmarshal(body, &call); err != nil {
-			http.Error(w, "body is not a JSON-RPC request", http.StatusBadRequest)
+		// The same decoder the handler uses: a batch (an array) or anything
+		// that is not one request fails here instead of slipping past.
+		msg, err := jsonrpc.DecodeMessage(body)
+		call, ok := msg.(*jsonrpc.Request)
+		if err != nil || !ok {
+			http.Error(w, "body must be one JSON-RPC request", http.StatusBadRequest)
 			return
 		}
 		if call.Method != "tools/call" {

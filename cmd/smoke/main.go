@@ -30,12 +30,6 @@ func main() {
 	// http but Go's cookie jar does not, so the cookie is carried by hand.
 	browser := &http.Client{Transport: &http.Transport{DialContext: dial}}
 	var session *http.Cookie
-	browser.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
-		if session != nil {
-			req.AddCookie(session)
-		}
-		return nil
-	}
 	get := func(u string) *http.Response {
 		req, err := http.NewRequest(http.MethodGet, u, nil)
 		must(err)
@@ -113,7 +107,7 @@ func main() {
 	pv := structured(call(ctx, sess, "deck_preview_url", map[string]any{"deck_id": deck}))
 	link := pv["preview_url"].(string)
 	// The deck's base URL: its own origin, or a path on the shared one.
-	base := strings.TrimSuffix(link[:strings.Index(link, "?t=")], "/")
+	base, _, _ := strings.Cut(link, "/?t=")
 	origin, _ := url.Parse(link)
 	// A bare base has no session yet.
 	resp := get(base + "/manifest.json")

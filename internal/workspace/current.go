@@ -18,7 +18,7 @@ func (s *Store) SetCurrent(id string, data map[string]any) error {
 	if _, ok := s.decks[id]; !ok {
 		return ErrNotFound
 	}
-	s.current[id] = Current{DeckID: id, UpdatedAt: s.now().UTC(), Data: data}
+	s.current[id] = Current{DeckID: id, UpdatedAt: time.Now().UTC(), Data: data}
 	return nil
 }
 
@@ -30,7 +30,6 @@ func (s *Store) ReadCurrent(ids ...string) *Current {
 	var out *Current
 	for _, id := range ids {
 		if c, ok := s.current[id]; ok && (out == nil || c.UpdatedAt.After(out.UpdatedAt)) {
-			c := c
 			out = &c
 		}
 	}

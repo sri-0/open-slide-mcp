@@ -20,12 +20,12 @@ import (
 
 // Deps are the collaborators the tools need.
 type Deps struct {
-	Store      *workspace.Store
-	Build      build.Deps
-	PreviewURL func(deckID string) (string, time.Time)
-	Disabled   []string // tool names registered nowhere, e.g. deck_delete
-	Log        *slog.Logger
-	Version    string
+	Store         *workspace.Store
+	Build         build.Builder
+	PreviewURL    func(deckID string) (string, time.Time)
+	ToolsDisabled []string // tools registered and then withdrawn, e.g. deck_delete
+	Log           *slog.Logger
+	Version       string
 }
 
 // New builds the MCP server with every tool registered.
@@ -44,7 +44,7 @@ func New(d Deps) (*mcp.Server, error) {
 	mcp.AddTool(s, &mcp.Tool{Name: "deck_delete", Description: descDelete}, t.del)
 	mcp.AddTool(s, &mcp.Tool{Name: "thread_cleanup", Description: descCleanup}, t.cleanup)
 	mcp.AddTool(s, &mcp.Tool{Name: "skill_read", Description: descSkill}, t.skill)
-	s.RemoveTools(d.Disabled...)
+	s.RemoveTools(d.ToolsDisabled...)
 	if err := registerSkills(s); err != nil {
 		return nil, err
 	}
@@ -84,8 +84,8 @@ type createIn struct {
 	TSX      string `json:"tsx,omitempty" jsonschema:"optional full index.tsx module to seed the deck"`
 }
 
-// ErrWrongThread is returned when a caller names a thread other than its own.
-var ErrWrongThread = errors.New("thread_id does not match the caller's thread")
+// errWrongThread is returned when a caller names a thread other than its own.
+var errWrongThread = errors.New("thread_id does not match the caller's thread")
 
 // owner returns the thread a call acts for: the X-Root-Thread-ID header the
 // authenticated caller's gateway sets, or, when the endpoint runs without
@@ -95,7 +95,7 @@ func owner(req *mcp.CallToolRequest, arg string) (string, error) {
 	if req != nil && req.Extra != nil {
 		if h := strings.TrimSpace(req.Extra.Header.Get("X-Root-Thread-ID")); h != "" {
 			if arg != "" && arg != h {
-				return "", ErrWrongThread
+				return "", errWrongThread
 			}
 			return h, nil
 		}
@@ -134,7 +134,7 @@ func (t *tools) create(ctx context.Context, req *mcp.CallToolRequest, in createI
 		return nil, deckOut{}, err
 	}
 	url, _ := t.PreviewURL(deck.ID)
-	v := t.Build.Deck(ctx, deck.ID, tsx)
+	v := t.Build.Build(ctx, deck.ID, tsx)
 	t.Log.Info("deck created", "deck", deck.ID, "thread", deck.ThreadID, "valid", v.OK)
 	return nil, deckOut{DeckID: deck.ID, Title: deck.Title, Hash: hash, CreatedAt: deck.CreatedAt.Format(time.RFC3339), PreviewURL: url, Validation: v}, nil
 }
@@ -156,7 +156,7 @@ func (t *tools) write(ctx context.Context, req *mcp.CallToolRequest, in writeIn)
 	if err != nil {
 		return nil, deckOut{}, err
 	}
-	v := t.Build.Deck(ctx, deck.ID, in.TSX)
+	v := t.Build.Build(ctx, deck.ID, in.TSX)
 	url, _ := t.PreviewURL(deck.ID)
 	t.Log.Info("deck written", "deck", deck.ID, "valid", v.OK)
 	return nil, deckOut{DeckID: deck.ID, Title: deck.Title, Hash: hash, CreatedAt: deck.CreatedAt.Format(time.RFC3339), PreviewURL: url, Validation: v}, nil
@@ -306,11 +306,14 @@ func (t *tools) cleanup(_ context.Context, req *mcp.CallToolRequest, in cleanupI
 		return nil, deleteOut{}, workspace.ErrBadThread
 	}
 	ids, err := t.Store.DeleteThread(thread)
+	if err != nil {
+		return nil, deleteOut{}, err
+	}
 	if ids == nil {
 		ids = []string{}
 	}
 	t.Log.Info("thread cleaned", "thread", thread, "deleted", len(ids))
-	return nil, deleteOut{Deleted: ids}, err
+	return nil, deleteOut{Deleted: ids}, nil
 }
 
 type skillIn struct {

@@ -6,8 +6,9 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -22,9 +23,9 @@ type Skill struct {
 	References  map[string]string
 }
 
-// Preface is prepended to every skill so the model knows how the filesystem
+// preface is prepended to every skill so the model knows how the filesystem
 // instructions map onto MCP tools.
-const Preface = `# How this skill applies through the open-slide MCP
+const preface = `# How this skill applies through the open-slide MCP
 
 You are not working in a local checkout. Every deck lives on the MCP server.
 Translate the skill's filesystem instructions as follows:
@@ -61,7 +62,7 @@ func All() ([]*Skill, error) {
 		}
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b *Skill) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
 }
 
@@ -95,15 +96,10 @@ func Get(name string) (*Skill, error) {
 // reference documents appended.
 func (s *Skill) Render(withRefs bool) string {
 	var b strings.Builder
-	b.WriteString(Preface)
+	b.WriteString(preface)
 	b.WriteString(s.Body)
 	if withRefs && len(s.References) > 0 {
-		names := make([]string, 0, len(s.References))
-		for n := range s.References {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
+		for _, n := range slices.Sorted(maps.Keys(s.References)) {
 			fmt.Fprintf(&b, "\n\n---\n\n# Reference: %s\n\n%s", n, s.References[n])
 		}
 	}
@@ -114,13 +110,11 @@ func splitFrontmatter(raw string) (description, body string) {
 	if !strings.HasPrefix(raw, "---\n") {
 		return "", raw
 	}
-	rest := raw[4:]
-	end := strings.Index(rest, "\n---\n")
-	if end < 0 {
+	fm, rest, ok := strings.Cut(raw[4:], "\n---\n")
+	if !ok {
 		return "", raw
 	}
-	fm := rest[:end]
-	body = strings.TrimLeft(rest[end+5:], "\n")
+	body = strings.TrimLeft(rest, "\n")
 	for _, line := range strings.Split(fm, "\n") {
 		if strings.HasPrefix(line, "description:") {
 			description = strings.TrimSpace(strings.TrimPrefix(line, "description:"))

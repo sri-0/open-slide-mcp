@@ -20,11 +20,17 @@ type Origins struct {
 	suffix string // host mode: everything after the deck label, lowercase
 }
 
-// ParseOrigins checks the pattern once at startup.
+// ParseOrigins checks the pattern once at startup. The session cookie is
+// Secure, so http is allowed only where browsers treat it as secure:
+// localhost and its subdomains.
 func ParseOrigins(pattern string) (Origins, error) {
+	// url.Parse rejects braces in a host, so the label is stood in for.
 	u, err := url.Parse(strings.Replace(pattern, "{deck}", "deck", 1))
-	if err != nil {
-		return Origins{}, errors.New("DECK_ORIGIN is not a URL")
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return Origins{}, errors.New("DECK_ORIGIN must be an http or https URL")
+	}
+	if u.Scheme == "http" && u.Hostname() != "localhost" && !strings.HasSuffix(u.Hostname(), ".localhost") {
+		return Origins{}, errors.New("DECK_ORIGIN must be https unless the host is localhost or ends in .localhost")
 	}
 	switch {
 	case strings.Contains(pattern, "://{deck}.") && u.Path == "":
@@ -32,7 +38,7 @@ func ParseOrigins(pattern string) (Origins, error) {
 	case strings.HasSuffix(pattern, "/{deck}") && u.Path == "/deck":
 		return Origins{scheme: u.Scheme, host: strings.ToLower(u.Host)}, nil
 	}
-	return Origins{}, errors.New("DECK_ORIGIN must be scheme://{deck}.<domain>[:port] or scheme://<host>[:port]/{deck}")
+	return Origins{}, errors.New("DECK_ORIGIN must be scheme://{deck}.<domain>[:port] (one origin per deck) or scheme://<host>[:port]/{deck} (one shared origin)")
 }
 
 // PathMode reports whether decks share one origin.

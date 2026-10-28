@@ -46,8 +46,7 @@ type Server struct {
 	EmbedOrigins []string     // allowed frame-ancestors and theme-message senders; empty allows any
 	Log          *slog.Logger
 
-	index  []byte // index.html with the theme script injected
-	head   int    // offset just past <head>, where the per-request base meta goes
+	index  string // index.html with the theme script, a base meta and nonce placeholders
 	csp    string
 	assets http.Handler
 }
@@ -65,8 +64,10 @@ func New(s Server) (*Server, error) {
 	if loc == nil {
 		return nil, fmt.Errorf("shell page %s has no <head>", s.Dir)
 	}
-	s.index = append(append(append([]byte{}, page[:loc[1]]...), themeScript(s.EmbedOrigins)...), page[loc[1]:]...)
-	s.head = loc[1]
+	// The shell reads its base from the meta before anything else runs; the
+	// nonce and base are filled in per request.
+	inject := `<meta name="osmcp-base" content="{{base}}">` + string(themeScript(s.EmbedOrigins))
+	s.index = string(scriptRe.ReplaceAll(append(append(append([]byte{}, page[:loc[1]]...), inject...), page[loc[1]:]...), []byte(`<script nonce="{{nonce}}"$1`)))
 	ancestors := "*"
 	if len(s.EmbedOrigins) > 0 {
 		ancestors = strings.Join(s.EmbedOrigins, " ")
@@ -100,7 +101,7 @@ func (s *Server) Middleware() echo.MiddlewareFunc {
 			r := c.Request()
 			deck, rest, ok := s.Origins.Deck(r.Host, r.URL.Path)
 			if !ok {
-				if s.Origins.PathMode() && strings.EqualFold(r.Host, s.Origins.Origin("")[len(s.Origins.scheme)+3:]) && strings.HasPrefix(r.URL.Path, "/assets/") {
+				if s.Origins.PathMode() && strings.EqualFold(r.Host, s.Origins.host) && strings.HasPrefix(r.URL.Path, "/assets/") {
 					c.Response().Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 					s.assets.ServeHTTP(c.Response(), r)
 					return nil
@@ -164,14 +165,7 @@ func (s *Server) serve(c echo.Context, deck, p string) error {
 		s.Events.Serve(deck, c.Response(), r)
 		return nil
 	case p == "/__current" && r.Method == http.MethodPost:
-		var data map[string]any
-		if err := json.NewDecoder(http.MaxBytesReader(c.Response(), r.Body, 64<<10)).Decode(&data); err != nil {
-			return c.String(http.StatusBadRequest, "cursor must be a JSON object")
-		}
-		if err := s.Store.SetCurrent(deck, data); err != nil {
-			return err
-		}
-		return c.NoContent(http.StatusNoContent)
+		return s.current(c, deck)
 	case strings.HasPrefix(p, "/__"):
 		if s.Editor == nil {
 			return c.String(http.StatusNotFound, "editing is not enabled on this server")
@@ -209,7 +203,7 @@ func (s *Server) exchange(c echo.Context, deck string) error {
 }
 
 // page serves the shell for any app route with a fresh CSP nonce on each
-// inline script.
+// script.
 func (s *Server) page(c echo.Context, deck string) error {
 	s.Store.Touch(deck)
 	var b [16]byte
@@ -222,11 +216,20 @@ func (s *Server) page(c echo.Context, deck string) error {
 	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=(), display-capture=(), fullscreen=(self)")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Cache-Control", "no-cache")
-	// The shell reads its base from this meta before anything else runs.
-	meta := `<meta name="osmcp-base" content="` + s.Origins.Base(deck) + `">`
-	body := append(append(append([]byte{}, s.index[:s.head]...), meta...), s.index[s.head:]...)
-	body = scriptRe.ReplaceAll(body, []byte(`<script nonce="`+nonce+`"$1`))
-	return c.Blob(http.StatusOK, "text/html; charset=utf-8", body)
+	body := strings.NewReplacer("{{nonce}}", nonce, "{{base}}", s.Origins.Base(deck)).Replace(s.index)
+	return c.HTML(http.StatusOK, body)
+}
+
+// current records the cursor the editor posts as the user moves around.
+func (s *Server) current(c echo.Context, deck string) error {
+	var data map[string]any
+	if err := json.NewDecoder(http.MaxBytesReader(c.Response(), c.Request().Body, 64<<10)).Decode(&data); err != nil {
+		return c.String(http.StatusBadRequest, "cursor must be a JSON object")
+	}
+	if err := s.Store.SetCurrent(deck, data); err != nil {
+		return err
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 // manifest lists the one deck this origin serves, in the shape the shell's

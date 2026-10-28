@@ -12,16 +12,16 @@ import (
 	"github.com/sri-0/open-slide-mcp/pkg/events"
 )
 
-// Deps are the collaborators a build needs.
-type Deps struct {
+// Builder compiles decks and publishes the result.
+type Builder struct {
 	Store    *workspace.Store
 	Compiler *compile.Compiler
 	Events   *events.Broker
 }
 
-// Deck compiles src for deckID. A failure is returned in the Result, never
+// Build compiles src for deckID. A failure is returned in the Result, never
 // as an error, so callers report it and the previous build keeps serving.
-func (d Deps) Deck(ctx context.Context, deckID, src string) compile.Result {
+func (d Builder) Build(ctx context.Context, deckID, src string) compile.Result {
 	r, err := d.Compiler.Compile(ctx, []byte(src))
 	if err != nil {
 		return compile.Result{OK: false, Message: err.Error()}
