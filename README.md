@@ -1,64 +1,137 @@
 # open-slide-mcp
 
-A Go wrapper that turns an [open-slide](https://open-slide.dev) workspace into a
-service: it supervises the open-slide dev server, proxies it behind signed
-preview links, and exposes deck authoring as MCP tools. Agents write decks
-through the tools; users see and edit them in the proxied open-slide UI, which
-can be iframed into another app.
+A Go service that lets agents write [open-slide](https://open-slide.dev) decks
+through MCP tools and lets people view and edit them in the open-slide editor,
+with every deck compiled on its own and served on its own origin. Nothing an
+agent writes is ever executed on the server.
 
 ```
-agent (opencode / agentic) --MCP streamable HTTP--> :8090/mcp
-browser / iframe            --preview link-------> :8090/preview/<deck>  --> vite :5173
+agent (agentlite / opencode) --MCP streamable HTTP--> :8090/mcp
+browser / iframe ------------- preview link ---------> http://<deck-id>.decks.localhost:8090
 ```
+
+## How it works
+
+- **Compile, never run.** `deck_write` hands the deck's `index.tsx` to esbuild's
+  Go library in a child process of this binary (`open-slide-mcp compile`) with
+  a deadline, a memory limit and an input size cap. esbuild parses and
+  transforms; it has no JavaScript engine. A deck may import only the names in
+  `DECK_IMPORTS_EXTERNAL` (resolved in the browser through an import map) and
+  `DECK_IMPORTS_BUNDLED` (bundled from a pinned copy under `MODULES_DIR`);
+  every other import, relative or bare, is a compile error. A deck that fails
+  to compile is kept so the agent can fix it, and the preview keeps serving the
+  last good build.
+- **One shell, built once.** `shell/` builds the open-slide editor from the
+  source the package ships, with a small Vite plugin that swaps open-slide's
+  build-time virtual modules for a runtime manifest and a server-sent event
+  stream, keeps the editor in, and adds a `react/jsx-dev-runtime` shim that
+  tags elements with the source positions the inspector needs. The result is
+  static files, the same for every deck and every user.
+- **One origin per deck, or one shared origin.** `DECK_ORIGIN` decides. With
+  `{deck}` as the first host label (`https://{deck}.decks.example.com`) each
+  deck is reachable only on its own host, only with a session cookie minted
+  for that deck, and the browser's same-origin policy keeps decks apart from
+  each other and from the embedding app. With `{deck}` as the path
+  (`https://decks.example.com/{deck}`) decks share one origin and simpler
+  infrastructure, and are kept apart by their path-scoped sessions only: a
+  deck's JavaScript can then reach another deck's routes with that deck's
+  cookie if the user has it, and two decks open in one page can read each
+  other's frames. Choose the host form wherever decks come from people you do
+  not trust with each other's decks.
+- **Signed access.** `preview_url` carries a short-lived signed link token.
+  Opening it sets a host-only `__Host-` session cookie (HttpOnly, Secure,
+  SameSite=None, Partitioned) that lives for `SESSION_TTL`, so a link the
+  embedding app stored keeps working after the link itself has expired. A link
+  token is never accepted as a cookie, nor a cookie as a link, and writes on a
+  deck origin are accepted only from the deck's own page.
+- **Edits without a dev server.** The editor's save routes are served by Go.
+  Source patches (visual edits, comments, notes, design, page order) are
+  applied by open-slide's own Babel editing functions, bundled once by esbuild
+  from the sources fetched at the pinned version. `EDIT_ENGINE` says where that
+  JavaScript runs: `embedded` (the default) runs it inside the Go process with
+  goja, a JavaScript interpreter written in Go, under a deadline and a stack
+  cap, so no Node is needed at runtime; `sidecar` runs the same bundle in a
+  parse-only Node process under Node's permission model. Either way the deck
+  source is only data to the parser; Go writes the result, recompiles and
+  notifies open editors.
 
 ## Tools
 
 | Tool | Purpose |
 |---|---|
-| `deck_create` | Create a deck. `thread_id` is required and owns the deck. Returns `deck_id`, `hash`, `created_at`, `preview_url`. |
-| `deck_write` | Replace the deck's `index.tsx`. Pass `expected_hash` so browser edits are never clobbered. The module is compiled by Vite and errors come back with line and column. |
+| `deck_create` | Create a deck. `thread_id` is required and owns the deck. Returns `deck_id` (a UUIDv7), `hash`, `created_at`, `preview_url`. |
+| `deck_write` | Replace the deck's `index.tsx`. Pass `expected_hash` so browser edits are never clobbered. Compile errors come back with line and column. |
 | `deck_read` | Source, hash, metadata and any `@slide-comment` markers left in the inspector. |
 | `deck_list` | Decks owned by a `thread_id`. |
-| `deck_validate` | Compile without writing. |
-| `deck_preview_url` | Fresh preview link for embedding. |
-| `deck_current` | The live cursor: which deck, page and element the user is looking at. |
-| `deck_delete`, `thread_cleanup` | Remove one deck, or every deck a thread owns. |
+| `deck_validate` | Compile the current source without changing anything. |
+| `deck_preview_url` | Fresh preview link for embedding, with `deck_id` and `title`. |
+| `deck_current` | The live cursor for a deck, or the newest across a thread's decks. |
+| `thread_cleanup` | Remove every deck a thread owns, only when the user asks to discard them. |
+| `deck_delete` | Remove one deck. Disabled by default through `MCP_TOOLS_DISABLED`, because a model that can delete will delete to retry. |
 | `skill_read` | The open-slide authoring skills, adapted for MCP use. Read `slide-authoring` first. |
 
 Skills are also published as resources (`openslide://skills/<name>`) and there
 is a `create-slide` prompt that bundles the workflow and the reference.
 
-Idle decks are swept after `DECK_TTL` (default 24h).
+### Ownership
+
+With `MCP_AUTH=oidc`, every `tools/call` must carry a bearer token issued by
+`OIDC_ISSUER_URL` for `OIDC_AUDIENCE`, and an `X-Root-Thread-ID` header naming
+the caller's thread; agentlite sends both. That thread owns every deck it
+creates, and a deck of another thread is reported as not found. `initialize`
+and `tools/list` need no token so a client can discover the server.
+With `MCP_AUTH=none` the endpoint is open and ownership is the `thread_id`
+argument the caller supplies; use it only for local work.
+
+The token proves a user of the realm, not the thread: any holder of a valid
+token who can reach `/mcp` directly may name any thread in the header. Keep
+`/mcp` reachable only from agentlite, which sets the header from the run it
+is executing. Binding the thread into the token is agentlite's token-exchange
+plan, not something this server can check.
 
 ## Run locally
 
+Needs Go 1.25, Node 22+ and pnpm.
+
 ```
-make setup     # pnpm install inside ./workspace (needs Node 20.19+ and pnpm)
-make run       # builds and starts on :8090, spawns the dev server on :5173
-make smoke     # drives every tool through the MCP endpoint
+make setup     # pnpm install in shell/ and edits/
+make shell     # build the editor once into shell/dist
+make edits     # fetch the editing sources and bundle them for the binary and the sidecar
+make run       # :8090, decks on http://<deck>.decks.localhost:8090 (DECK_ORIGIN overrides)
+make smoke     # drives every tool and opens a preview
+make isolation # curl proof: tokens, cookies, cross-deck refusals, compiler limits, editor round trip
 ```
+
+Browsers resolve `*.localhost` to loopback and treat it as a secure context,
+which is why the Secure cookie works over http there. `make run` uses
+`MCP_AUTH=none`; set `MCP_AUTH=oidc` with the `OIDC_*` variables to run against
+the agentlite stack.
 
 ## Run in Docker
 
 ```
 make docker-build
 make docker-run   # or: docker compose up
-make smoke
 ```
 
-Slides and metadata live in named volumes so they survive restarts.
+Slides, builds and metadata live in named volumes. Set `PREVIEW_SECRET` so
+preview links stored by the embedding app survive restarts. The compose file
+joins the agentlite stack's network so it can verify tokens against Keycloak.
 
 ## Embed the preview
 
-`preview_url` is meant to be iframed. The embedding page can set the editor's
-light/dark mode in two ways:
+`preview_url` is meant to be iframed from one of `EMBED_ORIGINS`, which also
+becomes the page's `frame-ancestors`. Give the frame
+`sandbox="allow-scripts allow-same-origin allow-popups allow-downloads"` and
+`allow="fullscreen"`; `allow-same-origin` is safe because the frame is
+cross-origin to the embedder and is needed for the editor's own requests to
+carry the cookie.
+
+The embedding page can set the editor's light/dark mode in two ways:
 
 - **On load:** add `theme=light|dark|system` to the preview link, e.g.
-  `http://localhost:8090/preview/<deck>?theme=dark` (with `PREVIEW_AUTH` the
-  link already has `?t=…`, so append `&theme=dark`). The redirect to
-  `/s/<deck>` keeps the parameter and the page paints in that theme.
+  `…/?t=<token>&theme=dark`.
 - **Live:** post a message to the iframe whenever the embedder's theme changes.
-  The editor switches without reloading.
 
   ```js
   iframe.contentWindow.postMessage(
@@ -67,17 +140,10 @@ light/dark mode in two ways:
   );
   ```
 
-A message only reaches a loaded page, so rely on `?theme=` for the first paint
-(or post again from the iframe's `load` handler). Any other `theme` value, and
-any other message, is ignored. Set
-`EMBED_ORIGINS` to accept theme messages only from the listed embedder origins.
-
-open-slide itself only reads the theme from `localStorage["theme"]`, so the
-wrapper injects a small script at the top of every HTML page it proxies: it
-stores the parameter or message value there and fires the `storage` event the
-UI listens for. The value persists for the wrapper's origin, so opening the
-editor directly afterwards uses the last theme set. Browsers that partition
-storage in cross-site iframes keep a separate value per embedding site.
+open-slide only reads the theme from `localStorage["theme"]`, so the page
+carries a small script that stores the parameter or message value there and
+fires the `storage` event the UI listens for. Messages are accepted only from
+`EMBED_ORIGINS`; empty accepts any origin.
 
 ## Connect opencode
 
@@ -89,52 +155,62 @@ Add to `~/.config/opencode/opencode.json` (`make opencode-config` prints it):
 }
 ```
 
-Then `opencode mcp list` should show `open-slide connected`. Ask the agent to
-call `skill_read` for `slide-authoring`, then `deck_create` with a thread id.
-
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LISTEN_ADDR` | `:8090` | wrapper listen address |
+| `LISTEN_ADDR` | `:8090` | listen address for the MCP endpoint and every deck origin |
 | `MCP_PATH` | `/mcp` | MCP endpoint path |
 | `MCP_TRANSPORT` | `http` | `http` or `stdio` |
-| `WORKSPACE_DIR` | `./workspace` | open-slide workspace |
-| `PUBLIC_URL` | `http://localhost:8090` | base of preview links |
-| `VITE_HOST` / `VITE_PORT` | `127.0.0.1` / `5173` | dev server bind |
-| `MANAGE_DEVSERVER` | `true` | spawn the dev server; `false` attaches to one you run |
-| `PREVIEW_AUTH` | `false` | require signed tokens for the preview UI |
-| `PREVIEW_SECRET` | random | HMAC key for tokens; set it for stable links across restarts |
-| `PREVIEW_TTL` | `12h` | token lifetime |
-| `DECK_TTL` | `24h` | idle deck lifetime; `0` disables sweeping |
+| `MCP_AUTH` | `none` | `oidc` requires a verified bearer token and `X-Root-Thread-ID` on tool calls |
+| `OIDC_ISSUER_URL`, `OIDC_AUDIENCE` | | the `iss` tokens must carry and the `aud` they must contain (`oidc` only) |
+| `OIDC_DISCOVERY_URL` | issuer | where provider metadata is fetched when the issuer is not reachable by that name |
+| `WORKSPACE_DIR` | `./workspace` | holds `slides/`, compiled builds and the metadata index |
+| `DECK_ORIGIN` | `http://{deck}.decks.localhost:8090` | `{deck}` as the first host label (one origin per deck) or as the path, `http://localhost:8090/{deck}` (one shared origin); https unless the host is localhost |
+| `MCP_TOOLS_DISABLED` | `deck_delete` | tools that exist but are not offered to agents |
+| `COOKIE_NAME` | `osmcp` | name of the deck session cookie, served as `__Secure-<name>` |
+| `SHELL_DIR` | `./shell/dist` | the built editor |
+| `MODULES_DIR` | `./shell/node_modules` | where bundled deck imports are read from |
+| `DECK_IMPORTS_EXTERNAL` | `react,react/jsx-runtime,react/jsx-dev-runtime,@open-slide/core` | imports the shell provides |
+| `DECK_IMPORTS_BUNDLED` | `lucide-react` | imports bundled into each deck |
+| `COMPILE_TIMEOUT` | `10s` | deadline for one compile |
+| `COMPILE_MAX_BYTES` | `262144` | largest deck source accepted |
+| `COMPILE_MAX_MEMORY` | `1073741824` | heap limit of the compile child, bytes (enforced on Linux) |
+| `EDIT_ENGINE` | `embedded` | where the editing bundle runs: `embedded` (in this process), `sidecar` (a Node process), or `none` (browser edits off) |
+| `EDIT_DEADLINE`, `EDIT_RUNTIMES`, `EDIT_MAX_STACK` | `5s`, `2`, `20000` | the embedded engine's budget per edit, interpreters kept ready, and call-stack cap |
+| `SIDECAR_DIR` | `./edits/dist` | the sidecar's bundle (`sidecar` only) |
+| `SIDECAR_ADDR` | `127.0.0.1:8091` | loopback address the sidecar listens on (`sidecar` only) |
+| `PREVIEW_SECRET` | random | HMAC key for deck tokens; set it for stable links across restarts |
+| `PREVIEW_TTL` | `12h` | lifetime of a preview link |
+| `SESSION_TTL` | `168h` | lifetime of the session cookie a link is exchanged for |
+| `DECK_TTL` | `0` | idle deck lifetime; `0` keeps decks until deleted |
 | `SWEEP_INTERVAL` | `10m` | sweeper cadence |
-| `EMBED_ORIGINS` | empty | comma-separated origins (e.g. `http://localhost:3000`) allowed to set the theme by `postMessage`; empty accepts any origin |
-
-With `PREVIEW_AUTH=true` the preview link carries a token, the proxy exchanges
-it for a cookie scoped to that deck, and `/s/<other-deck>` is refused. The
-dev-server endpoints that restart the process, update packages, or create and
-delete slides from the browser are always blocked.
+| `EMBED_ORIGINS` | empty | comma-separated origins allowed to embed decks and set the theme; empty allows any, with a startup warning |
 
 ## Upgrade open-slide
 
-The workspace pins `@open-slide/core` in `workspace/package.json` and
-`workspace/pnpm-lock.yaml` (currently 2.2.0). To move to a newer release:
+`shell/package.json` pins `@open-slide/core` (currently 2.2.0), and that one
+version drives everything: the shell is built from the installed package, and
+`make edits` fetches the matching repository tag for the editing functions
+the package does not export (the list is in `edits/fetch-upstream.mjs`; a
+file that moves upstream fails the fetch). To move to a newer release:
 
 ```
-cd workspace
-pnpm up "@open-slide/core@^<version>"
-pnpm sync:skills                  # refreshes .agents/skills; delete the .claude/ symlinks it creates
-cd .. && rsync -a --delete workspace/.agents/skills/ internal/skills/data/
-make test && make run && make smoke
+cd shell && pnpm up "@open-slide/core@<version>" && cd ..
+make shell edits build
+cd shell && pnpm sync:skills && rsync -a --delete .agents/skills/ ../internal/skills/data/
 ```
 
-`internal/skills/data` is the copy served by `skill_read`; the MCP preface in
-`internal/skills/skills.go` maps the skills' filesystem steps onto the tools.
+Then re-check the pinned contract listed in `shell/README.md`: the virtual
+module ids, the `DEV` gates, the `/__*` routes and the hot event names. Run
+`make smoke` and `make isolation`.
 
 ## Limits
 
-- Validation catches syntax and import errors, not type errors.
-- Assets cannot be uploaded through the MCP yet.
-- One dev server serves every deck. For hard tenant isolation run one
-  container per tenant.
+- Validation catches syntax errors and disallowed imports, not type errors.
+- Decks cannot import assets; use inline SVG, CSS or `ImagePlaceholder`.
+- External web fonts are blocked by the deck page's content security policy.
+- Google Fonts and svgl lookups, package updates and server restart do not
+  exist; the editor's buttons for them fail quietly.
+- The slide gallery is off: a deck's origin knows only that deck.
 - PPTX and PDF export are buttons in the preview UI, not tools.

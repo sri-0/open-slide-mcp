@@ -5,13 +5,30 @@ services:
     ports:
       - "8090:8090"
     environment:
-      PUBLIC_URL: http://localhost:8090
-      PREVIEW_AUTH: "false"
-      DECK_TTL: 24h
+      # Decks are served on their own origins; browsers resolve *.localhost to loopback.
+      DECK_ORIGIN: http://{deck}.decks.localhost:8090
+      EMBED_ORIGINS: http://localhost:3000
+      # Tool calls need the user's Keycloak token from agentlite; the realm is
+      # reachable as keycloak:8080 on the agentlite network but issues tokens
+      # for localhost:8180.
+      MCP_AUTH: oidc
+      OIDC_ISSUER_URL: http://localhost:8180/realms/agentlite
+      OIDC_DISCOVERY_URL: http://keycloak:8080/realms/agentlite
+      OIDC_AUDIENCE: agentlite
+      # Set PREVIEW_SECRET to keep stored preview links valid across restarts.
+      DECK_TTL: "0"
       LOG_LEVEL: info
     volumes:
       - slides:/app/workspace/slides
       - meta:/app/workspace/.open-slide-mcp
+    networks:
+      - agentlite
+    restart: unless-stopped
 volumes:
   slides:
   meta:
+networks:
+  agentlite:
+    # The stack from ../agentlite-infra (compose project "agentlite").
+    name: agentlite_default
+    external: true

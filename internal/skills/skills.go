@@ -6,8 +6,9 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -22,9 +23,9 @@ type Skill struct {
 	References  map[string]string
 }
 
-// Preface is prepended to every skill so the model knows how the filesystem
+// preface is prepended to every skill so the model knows how the filesystem
 // instructions map onto MCP tools.
-const Preface = `# How this skill applies through the open-slide MCP
+const preface = `# How this skill applies through the open-slide MCP
 
 You are not working in a local checkout. Every deck lives on the MCP server.
 Translate the skill's filesystem instructions as follows:
@@ -35,11 +36,12 @@ Translate the skill's filesystem instructions as follows:
 - To start a new deck call deck_create with thread_id (required), a short kebab-case name and a title.
 - "themes/" is empty unless the operator added themes; skip theme selection if deck_list_themes is not available.
 - Do not run shell commands for timestamps. deck_create returns created_at; reuse it for meta.createdAt.
-- Assets cannot be uploaded through the MCP yet. Use inline SVG, CSS, or ImagePlaceholder.
+- A deck may import only react, @open-slide/core and lucide-react (icons: import { Rocket } from 'lucide-react'). Relative imports and asset files are refused by the compiler: use inline SVG, CSS, or ImagePlaceholder instead of ./assets.
+- External web fonts are blocked by the deck's content security policy. Use the design-system fonts (var(--osd-font-*)), Geist, or system font stacks; skip the webfonts reference.
 - If AskUserQuestion is unavailable, ask in plain chat, or make sensible assumptions and state them.
-- deck_write validates the module with the dev server compiler and returns errors. Fix and rewrite until it passes.
+- deck_write compiles the module on the server and returns errors with line and column. Fix and rewrite until it passes; the preview keeps the last good version meanwhile.
 - After writing, tell the user the preview_url returned by deck_create or deck_preview_url.
-- "Previewing a page visually": there is no server.json to read. If you have a browser tool, open the preview_url once, then /s/<deck_id>/preview?p=N on the same host; otherwise skip the visual check.
+- "Previewing a page visually": there is no server.json to read. If you have a browser tool, open the preview_url once, then /s/<deck_id>/preview?p=N on the same origin; otherwise skip the visual check.
 
 `
 
@@ -60,7 +62,7 @@ func All() ([]*Skill, error) {
 		}
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b *Skill) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
 }
 
@@ -94,15 +96,10 @@ func Get(name string) (*Skill, error) {
 // reference documents appended.
 func (s *Skill) Render(withRefs bool) string {
 	var b strings.Builder
-	b.WriteString(Preface)
+	b.WriteString(preface)
 	b.WriteString(s.Body)
 	if withRefs && len(s.References) > 0 {
-		names := make([]string, 0, len(s.References))
-		for n := range s.References {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
+		for _, n := range slices.Sorted(maps.Keys(s.References)) {
 			fmt.Fprintf(&b, "\n\n---\n\n# Reference: %s\n\n%s", n, s.References[n])
 		}
 	}
@@ -113,13 +110,11 @@ func splitFrontmatter(raw string) (description, body string) {
 	if !strings.HasPrefix(raw, "---\n") {
 		return "", raw
 	}
-	rest := raw[4:]
-	end := strings.Index(rest, "\n---\n")
-	if end < 0 {
+	fm, rest, ok := strings.Cut(raw[4:], "\n---\n")
+	if !ok {
 		return "", raw
 	}
-	fm := rest[:end]
-	body = strings.TrimLeft(rest[end+5:], "\n")
+	body = strings.TrimLeft(rest, "\n")
 	for _, line := range strings.Split(fm, "\n") {
 		if strings.HasPrefix(line, "description:") {
 			description = strings.TrimSpace(strings.TrimPrefix(line, "description:"))

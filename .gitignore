@@ -5,3 +5,11 @@
 !/workspace/slides/.gitkeep
 /workspace/.open-slide-mcp
 .env
+/edits/node_modules
+/edits/dist
+/shell/dist
+/shell/node_modules
+/shell/vendor/*
+!/shell/vendor/react-jsx-dev-runtime.js
+/edits/upstream
+/pkg/edits/apply.js

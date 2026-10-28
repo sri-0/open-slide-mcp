@@ -1,0 +1,23 @@
+{
+  "name": "open-slide-edits",
+  "private": true,
+  "type": "module",
+  "description": "open-slide's editor save routes as one pure apply() function: bundled for the Go server to embed, and as a Node sidecar.",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "upstream": "node fetch-upstream.mjs",
+    "build": "pnpm build:embedded && pnpm build:sidecar",
+    "build:embedded": "esbuild src/embedded/entry.ts --bundle --format=iife --platform=neutral --main-fields=main,module --target=es2020 --alias:node:crypto=./src/embedded/crypto.ts --alias:node:fs/promises=./src/embedded/node-empty.ts --alias:node:path=./src/embedded/node-empty.ts --define:process.env.BABEL_TYPES_8_BREAKING=false --log-level=warning --outfile=../pkg/edits/apply.js",
+    "build:sidecar": "esbuild src/server.ts --bundle --platform=node --format=esm --sourcemap --outfile=dist/server.js",
+    "start": "node --permission --allow-fs-read=./dist dist/server.js"
+  },
+  "dependencies": {
+    "@babel/parser": "7.29.9",
+    "@babel/types": "7.29.8"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0"
+  }
+}

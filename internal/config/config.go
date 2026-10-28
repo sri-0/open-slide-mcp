@@ -2,126 +2,154 @@
 package config
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sethvargo/go-envconfig"
 )
 
 // Config holds every tunable for the wrapper. All values come from the
 // environment so the same binary runs locally and inside the container.
 type Config struct {
-	ListenAddr      string        // address the wrapper listens on (proxy + MCP)
-	MCPPath         string        // path the streamable HTTP MCP endpoint is mounted at
-	Transport       string        // "http" (default) or "stdio" for the MCP side
-	WorkspaceDir    string        // open-slide workspace containing package.json and slides/
-	PublicURL       string        // externally reachable base URL of the wrapper, used in preview links
-	ViteHost        string        // host the open-slide dev server binds to
-	VitePort        int           // port the open-slide dev server binds to
-	ManageDevServer bool          // spawn and supervise the dev server; false attaches to an existing one
-	PreviewAuth     bool          // require a signed token to reach the proxied dev server
-	PreviewSecret   []byte        // HMAC key for preview tokens
-	PreviewTTL      time.Duration // lifetime of a preview token and its cookie
-	DeckTTL         time.Duration // decks idle longer than this are swept; 0 disables sweeping
-	SweepInterval   time.Duration // how often the sweeper runs
-	EmbedOrigins    []string      // origins allowed to set the theme by postMessage; empty allows any
-	LogLevel        string
+	ListenAddr   string `env:"LISTEN_ADDR,default=:8090"`         // address for the MCP endpoint and every deck origin
+	MCPPath      string `env:"MCP_PATH,default=/mcp"`             // path the streamable HTTP MCP endpoint is mounted at
+	Transport    string `env:"MCP_TRANSPORT,default=http"`        // "http" or "stdio" for the MCP side
+	WorkspaceDir string `env:"WORKSPACE_DIR,default=./workspace"` // holds slides/, compiled builds and the metadata index
+
+	// MCPAuth is "oidc" (tool calls need a bearer token from OIDCIssuer for
+	// OIDCAudience, and X-Root-Thread-ID names the owning thread) or "none"
+	// (the endpoint is open and ownership is whatever the caller claims).
+	MCPAuth       string   `env:"MCP_AUTH,default=none"`
+	ToolsDisabled []string `env:"MCP_TOOLS_DISABLED,default=deck_delete"` // tools that exist but are not offered
+	OIDCIssuer    string   `env:"OIDC_ISSUER_URL"`                        // the iss claim tokens must carry
+	OIDCDiscovery string   `env:"OIDC_DISCOVERY_URL"`                     // where provider metadata is fetched when the issuer is not reachable by that name
+	OIDCAudience  string   `env:"OIDC_AUDIENCE"`                          // the aud claim tokens must contain
+
+	// DeckOrigin is where decks are served, with {deck} as the first host
+	// label (https://{deck}.decks.example.com: one origin per deck) or as
+	// the path (https://decks.example.com/{deck}: one shared origin).
+	DeckOrigin string `env:"DECK_ORIGIN,default=http://{deck}.decks.localhost:8090"`
+	ShellDir   string `env:"SHELL_DIR,default=./shell/dist"`           // the built editor shell: index.html and assets/
+	ModulesDir string `env:"MODULES_DIR,default=./shell/node_modules"` // node_modules directory the bundled deck imports come from
+	CookieName string `env:"COOKIE_NAME,default=osmcp"`                // the deck session cookie, behind the __Secure- prefix
+
+	ImportsExternal  []string      `env:"DECK_IMPORTS_EXTERNAL"`                 // deck imports resolved in the browser through the shell's import map
+	ImportsBundled   []string      `env:"DECK_IMPORTS_BUNDLED"`                  // deck imports bundled from ModulesDir
+	CompileTimeout   time.Duration `env:"COMPILE_TIMEOUT,default=10s"`           // deadline for one deck compile
+	CompileMaxBytes  int64         `env:"COMPILE_MAX_BYTES,default=262144"`      // largest deck source accepted
+	CompileMaxMemory int64         `env:"COMPILE_MAX_MEMORY,default=1073741824"` // address-space limit of the compile child, in bytes
+
+	// EditEngine runs the editor's save logic: "embedded" (open-slide's
+	// editing bundle inside this process) or "sidecar" (the same bundle in a
+	// Node process at SidecarAddr); "none" turns browser edits off.
+	EditEngine   string        `env:"EDIT_ENGINE,default=embedded"`
+	EditDeadline time.Duration `env:"EDIT_DEADLINE,default=5s"`            // budget for one embedded edit
+	EditRuntimes int           `env:"EDIT_RUNTIMES,default=2"`             // embedded interpreters kept ready
+	EditMaxStack int           `env:"EDIT_MAX_STACK,default=20000"`        // embedded call-stack limit
+	SidecarDir   string        `env:"SIDECAR_DIR,default=./edits/dist"`    // the sidecar's bundle
+	SidecarAddr  string        `env:"SIDECAR_ADDR,default=127.0.0.1:8091"` // loopback address the sidecar listens on
+
+	PreviewSecret string        `env:"PREVIEW_SECRET"`             // HMAC key for deck tokens; random when unset
+	PreviewTTL    time.Duration `env:"PREVIEW_TTL,default=12h"`    // lifetime of a preview link
+	SessionTTL    time.Duration `env:"SESSION_TTL,default=168h"`   // lifetime of the cookie a preview link is exchanged for
+	DeckTTL       time.Duration `env:"DECK_TTL,default=0"`         // decks idle longer than this are swept; 0 keeps them
+	SweepInterval time.Duration `env:"SWEEP_INTERVAL,default=10m"` // how often the sweeper runs
+	EmbedOrigins  []string      `env:"EMBED_ORIGINS"`              // origins allowed to embed decks and set the theme; empty allows any
+	LogLevel      slog.Level    `env:"LOG_LEVEL,default=info"`
 }
 
 // FromEnv reads the configuration, applying defaults and validating paths.
-func FromEnv() (*Config, error) {
-	c := &Config{
-		ListenAddr:      getenv("LISTEN_ADDR", ":8090"),
-		MCPPath:         getenv("MCP_PATH", "/mcp"),
-		Transport:       getenv("MCP_TRANSPORT", "http"),
-		WorkspaceDir:    getenv("WORKSPACE_DIR", "./workspace"),
-		PublicURL:       strings.TrimRight(getenv("PUBLIC_URL", "http://localhost:8090"), "/"),
-		ViteHost:        getenv("VITE_HOST", "127.0.0.1"),
-		VitePort:        getenvInt("VITE_PORT", 5173),
-		ManageDevServer: getenvBool("MANAGE_DEVSERVER", true),
-		PreviewAuth:     getenvBool("PREVIEW_AUTH", false),
-		PreviewTTL:      getenvDuration("PREVIEW_TTL", 12*time.Hour),
-		DeckTTL:         getenvDuration("DECK_TTL", 24*time.Hour),
-		SweepInterval:   getenvDuration("SWEEP_INTERVAL", 10*time.Minute),
-		EmbedOrigins:    getenvList("EMBED_ORIGINS"),
-		LogLevel:        getenv("LOG_LEVEL", "info"),
+func FromEnv(ctx context.Context) (*Config, error) {
+	var c Config
+	if err := envconfig.Process(ctx, &c); err != nil {
+		return nil, err
 	}
-	abs, err := filepath.Abs(c.WorkspaceDir)
-	if err != nil {
-		return nil, fmt.Errorf("workspace dir: %w", err)
-	}
-	c.WorkspaceDir = abs
-	if _, err := os.Stat(filepath.Join(abs, "package.json")); err != nil {
-		return nil, fmt.Errorf("workspace %s has no package.json (run make setup): %w", abs, err)
+	return &c, c.check()
+}
+
+// check fills the derived values and fails with what to set.
+func (c *Config) check() error {
+	var err error
+	if c.WorkspaceDir, err = filepath.Abs(c.WorkspaceDir); err != nil {
+		return fmt.Errorf("WORKSPACE_DIR: %w", err)
 	}
 	if c.Transport != "http" && c.Transport != "stdio" {
-		return nil, fmt.Errorf("MCP_TRANSPORT must be http or stdio, got %q", c.Transport)
+		return fmt.Errorf("MCP_TRANSPORT must be http or stdio, got %q", c.Transport)
 	}
-	if s := os.Getenv("PREVIEW_SECRET"); s != "" {
-		c.PreviewSecret = []byte(s)
-	} else {
+	switch c.MCPAuth {
+	case "none":
+	case "oidc":
+		if c.OIDCIssuer == "" || c.OIDCAudience == "" {
+			return errors.New("MCP_AUTH=oidc needs OIDC_ISSUER_URL and OIDC_AUDIENCE")
+		}
+	default:
+		return fmt.Errorf("MCP_AUTH must be oidc or none, got %q", c.MCPAuth)
+	}
+	if c.ShellDir, err = filepath.Abs(c.ShellDir); err != nil {
+		return fmt.Errorf("SHELL_DIR: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(c.ShellDir, "index.html")); err != nil {
+		return fmt.Errorf("SHELL_DIR %s has no index.html (run make shell): %w", c.ShellDir, err)
+	}
+	if c.ModulesDir, err = filepath.Abs(c.ModulesDir); err != nil {
+		return fmt.Errorf("MODULES_DIR: %w", err)
+	}
+	if c.CookieName == "" || strings.ContainsAny(c.CookieName, " ;,=") {
+		return errors.New("COOKIE_NAME must be a plain token")
+	}
+	// The default lists hold commas, which a struct tag cannot carry.
+	if len(c.ImportsExternal) == 0 {
+		c.ImportsExternal = []string{"react", "react/jsx-runtime", "react/jsx-dev-runtime", "@open-slide/core"}
+	}
+	if len(c.ImportsBundled) == 0 {
+		c.ImportsBundled = []string{"lucide-react"}
+	}
+	for _, p := range c.ImportsBundled {
+		if _, err := os.Stat(filepath.Join(c.ModulesDir, p)); err != nil {
+			return fmt.Errorf("DECK_IMPORTS_BUNDLED: %s is not installed under MODULES_DIR %s (run make shell)", p, c.ModulesDir)
+		}
+	}
+	switch c.EditEngine {
+	case "embedded", "none":
+	case "sidecar":
+		if c.SidecarDir, err = filepath.Abs(c.SidecarDir); err != nil {
+			return fmt.Errorf("SIDECAR_DIR: %w", err)
+		}
+		if _, err := os.Stat(filepath.Join(c.SidecarDir, "server.js")); err != nil {
+			return fmt.Errorf("SIDECAR_DIR %s has no server.js (run make edits): %w", c.SidecarDir, err)
+		}
+	default:
+		return fmt.Errorf("EDIT_ENGINE must be embedded, sidecar or none, got %q", c.EditEngine)
+	}
+	if c.EditDeadline <= 0 || c.EditRuntimes <= 0 || c.EditMaxStack <= 0 {
+		return errors.New("EDIT_DEADLINE, EDIT_RUNTIMES and EDIT_MAX_STACK must be positive")
+	}
+	if c.CompileTimeout <= 0 || c.CompileMaxBytes <= 0 {
+		return errors.New("COMPILE_TIMEOUT and COMPILE_MAX_BYTES must be positive")
+	}
+	if c.PreviewTTL <= 0 || c.SessionTTL <= 0 {
+		return errors.New("PREVIEW_TTL and SESSION_TTL must be positive")
+	}
+	for i, o := range c.EmbedOrigins {
+		c.EmbedOrigins[i] = strings.TrimRight(strings.TrimSpace(o), "/")
+	}
+	switch {
+	case c.PreviewSecret == "":
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err != nil {
-			return nil, err
+			return err
 		}
-		c.PreviewSecret = []byte(hex.EncodeToString(b))
+		c.PreviewSecret = hex.EncodeToString(b)
+	case len(c.PreviewSecret) < 32:
+		return errors.New("PREVIEW_SECRET must be at least 32 characters")
 	}
-	return c, nil
-}
-
-// ViteBase is the loopback URL of the dev server.
-func (c *Config) ViteBase() string {
-	return fmt.Sprintf("http://%s:%d", c.ViteHost, c.VitePort)
-}
-
-func getenv(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
-// getenvList splits a comma-separated variable, dropping blanks and trailing slashes.
-func getenvList(k string) []string {
-	var out []string
-	for _, v := range strings.Split(os.Getenv(k), ",") {
-		if v = strings.TrimRight(strings.TrimSpace(v), "/"); v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-func getenvInt(k string, def int) int {
-	if v := os.Getenv(k); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func getenvBool(k string, def bool) bool {
-	if v := os.Getenv(k); v != "" {
-		switch strings.ToLower(v) {
-		case "1", "true", "yes", "on":
-			return true
-		case "0", "false", "no", "off":
-			return false
-		}
-	}
-	return def
-}
-
-func getenvDuration(k string, def time.Duration) time.Duration {
-	if v := os.Getenv(k); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return def
+	return nil
 }

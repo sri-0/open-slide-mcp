@@ -1,15 +1,19 @@
-// Command open-slide-mcp wraps an open-slide workspace: it supervises the
-// dev server, proxies it with preview tokens, and serves MCP tools.
+// Command open-slide-mcp serves slide decks as MCP tools for agents and as
+// the open-slide editor for people. Every deck is compiled on its own by
+// esbuild and served on its own origin; nothing an agent writes is ever
+// executed on the server.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -17,16 +21,30 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/sri-0/open-slide-mcp/internal/build"
 	"github.com/sri-0/open-slide-mcp/internal/config"
-	"github.com/sri-0/open-slide-mcp/internal/devserver"
+	"github.com/sri-0/open-slide-mcp/internal/editor"
 	"github.com/sri-0/open-slide-mcp/internal/mcpserver"
-	"github.com/sri-0/open-slide-mcp/internal/proxy"
+	"github.com/sri-0/open-slide-mcp/internal/shell"
 	"github.com/sri-0/open-slide-mcp/internal/workspace"
+	"github.com/sri-0/open-slide-mcp/pkg/auth"
+	"github.com/sri-0/open-slide-mcp/pkg/compile"
+	"github.com/sri-0/open-slide-mcp/pkg/edits"
+	"github.com/sri-0/open-slide-mcp/pkg/events"
 )
 
 var version = "dev"
 
 func main() {
+	// The server re-executes itself as `open-slide-mcp compile` for every
+	// deck, so a pathological deck can only take down that child.
+	if len(os.Args) > 1 && os.Args[1] == "compile" {
+		if err := compile.Child(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
@@ -34,59 +52,95 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.FromEnv()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	cfg, err := config.FromEnv(ctx)
 	if err != nil {
 		return err
 	}
-	var lvl slog.Level
-	if err := lvl.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
-		lvl = slog.LevelInfo
-	}
-	logOut := os.Stderr
-	log := slog.New(slog.NewJSONHandler(logOut, &slog.HandlerOptions{Level: lvl}))
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(log)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	store, err := workspace.Open(cfg.WorkspaceDir)
 	if err != nil {
 		return err
 	}
-
-	if cfg.ManageDevServer {
-		sup := &devserver.Supervisor{Dir: cfg.WorkspaceDir, Host: cfg.ViteHost, Port: cfg.VitePort, Log: log}
-		supDone := make(chan struct{})
-		go func() {
-			defer close(supDone)
-			if err := sup.Run(ctx); err != nil {
-				log.Error("dev server supervisor stopped", "err", err)
-			}
-		}()
-		// Wait for the dev server to be killed before exiting. Otherwise it can
-		// outlive the wrapper and keep the port, so the next start attaches to
-		// the orphan while its own dev server moves to another port.
-		defer func() {
-			stop()
-			select {
-			case <-supDone:
-			case <-time.After(10 * time.Second):
-				log.Warn("dev server did not stop within 10s")
-			}
-		}()
-	}
-	if err := devserver.WaitReady(ctx, cfg.ViteBase(), 60*time.Second); err != nil {
-		return err
-	}
-	log.Info("dev server ready", "url", cfg.ViteBase())
-
-	px, err := proxy.New(cfg.ViteBase(), cfg.PreviewSecret, cfg.PreviewAuth, cfg.PreviewTTL, cfg.PublicURL, store.Touch)
+	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	px.EmbedOrigins = cfg.EmbedOrigins
+	// The shell build lists the names each import-map entry exports.
+	var exports map[string][]string
+	if b, err := os.ReadFile(filepath.Join(cfg.ShellDir, "exports.json")); err != nil {
+		return fmt.Errorf("shell exports: %w", err)
+	} else if err := json.Unmarshal(b, &exports); err != nil {
+		return fmt.Errorf("shell exports: %w", err)
+	}
+	comp, err := compile.New(compile.Config{
+		Self: self, External: cfg.ImportsExternal, Bundled: cfg.ImportsBundled, ModulesDir: cfg.ModulesDir, Exports: exports,
+		Timeout: cfg.CompileTimeout, MaxBytes: cfg.CompileMaxBytes, MaxMemory: cfg.CompileMaxMemory,
+	})
+	if err != nil {
+		return err
+	}
+	signer, err := auth.New([]byte(cfg.PreviewSecret))
+	if err != nil {
+		return err
+	}
+	origins, err := shell.ParseOrigins(cfg.DeckOrigin)
+	if err != nil {
+		return err
+	}
+	broker := events.New()
+	builder := build.Builder{Store: store, Compiler: comp, Events: broker}
 
-	srv, err := mcpserver.New(mcpserver.Deps{Store: store, ViteBase: cfg.ViteBase(), PreviewURL: px.PreviewURL, Log: log, Version: version})
+	var ed http.Handler
+	switch cfg.EditEngine {
+	case "embedded":
+		eng, err := edits.New(edits.Config{Runtimes: cfg.EditRuntimes, Deadline: cfg.EditDeadline, MaxStack: cfg.EditMaxStack})
+		if err != nil {
+			return err
+		}
+		ed = &editor.Editor{Build: builder, Apply: eng, Log: log}
+		log.Info("editing enabled", "engine", "embedded", "runtimes", cfg.EditRuntimes)
+	case "sidecar":
+		sc := editor.NewSidecar(cfg.SidecarDir, cfg.SidecarAddr, log)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if err := sc.Run(ctx); err != nil {
+				log.Error("sidecar supervisor stopped", "err", err)
+			}
+		}()
+		defer func() {
+			stop()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				log.Warn("sidecar did not stop within 10s")
+			}
+		}()
+		if err := sc.WaitReady(ctx, 30*time.Second); err != nil {
+			return err
+		}
+		ed = &editor.Editor{Build: builder, Apply: sc, Log: log}
+		log.Info("editing enabled", "engine", "sidecar", "addr", cfg.SidecarAddr)
+	default:
+		log.Warn("EDIT_ENGINE is none: decks are viewable but browser edits are off")
+	}
+
+	sh, err := shell.New(shell.Server{
+		Origins: origins, Dir: cfg.ShellDir, Signer: signer, Cookie: "__Secure-" + cfg.CookieName, LinkTTL: cfg.PreviewTTL, SessionTTL: cfg.SessionTTL,
+		Store: store, Events: broker, Editor: ed, EmbedOrigins: cfg.EmbedOrigins, Log: log,
+	})
+	if err != nil {
+		return err
+	}
+	if len(cfg.EmbedOrigins) == 0 {
+		log.Warn("EMBED_ORIGINS is empty: any site may embed decks and set their theme")
+	}
+
+	srv, err := mcpserver.New(mcpserver.Deps{Store: store, Build: builder, PreviewURL: sh.PreviewURL, ToolsDisabled: cfg.ToolsDisabled, Log: log, Version: version})
 	if err != nil {
 		return err
 	}
@@ -97,27 +151,30 @@ func run() error {
 	e.HideBanner, e.HidePort = true, true
 	e.Use(middleware.Recover())
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
-		LogURI: true, LogStatus: true, LogMethod: true, LogLatency: true,
-		Skipper: func(c echo.Context) bool {
-			p := c.Request().URL.Path
-			return strings.HasPrefix(p, "/@") || strings.HasPrefix(p, "/node_modules") || strings.HasPrefix(p, "/src/")
-		},
+		// The path only: a preview link carries its token in the query.
+		LogURIPath: true, LogStatus: true, LogMethod: true, LogLatency: true, LogHost: true,
 		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
-			log.Debug("http", "method", v.Method, "uri", v.URI, "status", v.Status, "latency", v.Latency)
+			log.Debug("http", "method", v.Method, "host", v.Host, "path", v.URIPath, "status", v.Status, "latency", v.Latency)
 			return nil
 		},
 	}))
+	e.Pre(sh.Middleware())
 	e.GET("/healthz", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{"ok": true, "version": version, "decks": len(store.List(""))})
+		return c.JSON(http.StatusOK, map[string]any{"ok": true, "version": version})
 	})
 	if cfg.Transport == "http" {
-		h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{
-			Stateless:                 true,
-			DisableLocalhostProtection: true,
-		})
-		e.Any(cfg.MCPPath, echo.WrapHandler(h))
+		var bearer auth.Bearer
+		if cfg.MCPAuth == "oidc" {
+			if bearer.Verify, err = auth.OIDC(ctx, cfg.OIDCIssuer, cfg.OIDCDiscovery, cfg.OIDCAudience); err != nil {
+				return err
+			}
+			log.Info("mcp auth", "issuer", cfg.OIDCIssuer, "audience", cfg.OIDCAudience)
+		} else {
+			log.Warn("MCP_AUTH is none: the MCP endpoint is open and deck ownership is whatever the caller claims")
+		}
+		h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{Stateless: true})
+		e.Any(cfg.MCPPath, echo.WrapHandler(bearer.Wrap(h)))
 	}
-	px.Register(e)
 
 	go func() {
 		<-ctx.Done()
@@ -135,7 +192,7 @@ func run() error {
 		}()
 	}
 
-	log.Info("listening", "addr", cfg.ListenAddr, "mcp", cfg.MCPPath, "public_url", cfg.PublicURL, "preview_auth", cfg.PreviewAuth, "embed_origins", cfg.EmbedOrigins, "transport", cfg.Transport)
+	log.Info("listening", "addr", cfg.ListenAddr, "mcp", cfg.MCPPath, "mcp_auth", cfg.MCPAuth, "tools_disabled", cfg.ToolsDisabled, "deck_origin", cfg.DeckOrigin, "embed_origins", cfg.EmbedOrigins, "transport", cfg.Transport)
 	if err := e.Start(cfg.ListenAddr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
