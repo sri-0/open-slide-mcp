@@ -91,7 +91,7 @@ func run() error {
 		return err
 	}
 	broker := events.New()
-	deps := build.Builder{Store: store, Compiler: comp, Events: broker}
+	builder := build.Builder{Store: store, Compiler: comp, Events: broker}
 
 	var ed http.Handler
 	if cfg.SidecarDir != "" {
