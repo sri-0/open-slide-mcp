@@ -35,11 +35,12 @@ Translate the skill's filesystem instructions as follows:
 - To start a new deck call deck_create with thread_id (required), a short kebab-case name and a title.
 - "themes/" is empty unless the operator added themes; skip theme selection if deck_list_themes is not available.
 - Do not run shell commands for timestamps. deck_create returns created_at; reuse it for meta.createdAt.
-- Assets cannot be uploaded through the MCP yet. Use inline SVG, CSS, or ImagePlaceholder.
+- A deck may import only react, @open-slide/core and lucide-react (icons: import { Rocket } from 'lucide-react'). Relative imports and asset files are refused by the compiler: use inline SVG, CSS, or ImagePlaceholder instead of ./assets.
+- External web fonts are blocked by the deck's content security policy. Use the design-system fonts (var(--osd-font-*)), Geist, or system font stacks; skip the webfonts reference.
 - If AskUserQuestion is unavailable, ask in plain chat, or make sensible assumptions and state them.
-- deck_write validates the module with the dev server compiler and returns errors. Fix and rewrite until it passes.
+- deck_write compiles the module on the server and returns errors with line and column. Fix and rewrite until it passes; the preview keeps the last good version meanwhile.
 - After writing, tell the user the preview_url returned by deck_create or deck_preview_url.
-- "Previewing a page visually": there is no server.json to read. If you have a browser tool, open the preview_url once, then /s/<deck_id>/preview?p=N on the same host; otherwise skip the visual check.
+- "Previewing a page visually": there is no server.json to read. If you have a browser tool, open the preview_url once, then /s/<deck_id>/preview?p=N on the same origin; otherwise skip the visual check.
 
 `
 

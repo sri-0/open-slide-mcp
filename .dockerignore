@@ -1,6 +1,12 @@
 bin
+.git
+.factory
 workspace/node_modules
 workspace/dist
 workspace/slides/*
 workspace/.open-slide-mcp
-.git
+shell/node_modules
+shell/dist
+sidecar/node_modules
+sidecar/dist
+sidecar/upstream

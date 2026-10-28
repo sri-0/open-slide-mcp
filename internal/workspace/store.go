@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Deck is the metadata record for one slide folder.
@@ -26,6 +28,7 @@ type Deck struct {
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	LastAccess time.Time `json:"last_access"`
+	BuildHash  string    `json:"build_hash,omitempty"` // hash of the compiled module served for this deck
 }
 
 // Comment is one @slide-comment marker left by the inspector.
@@ -39,24 +42,20 @@ type Comment struct {
 var (
 	ErrNotFound  = errors.New("deck not found")
 	ErrConflict  = errors.New("deck changed since it was last read; call deck_read and merge")
-	ErrExists    = errors.New("deck already exists")
 	ErrBadThread = errors.New("thread_id is required")
-	ErrBadName   = errors.New("name must be kebab-case: lowercase letters, digits and dashes")
 )
 
-var (
-	slugRe    = regexp.MustCompile(`[^a-z0-9]+`)
-	nameRe    = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-	commentRe = regexp.MustCompile(`\{/\*\s*@slide-comment\s+id="(c-[a-f0-9]+)"\s+ts="([^"]+)"\s+text="([A-Za-z0-9_\-]+={0,2})"\s*\*/\}`)
-)
+var commentRe = regexp.MustCompile(`\{/\*\s*@slide-comment\s+id="(c-[a-f0-9]+)"\s+ts="([^"]+)"\s+text="([A-Za-z0-9_\-]+={0,2})"\s*\*/\}`)
 
-// Store owns the slides directory and the metadata index.
+// Store owns the slides directory, the compiled builds and the metadata index.
 type Store struct {
-	root     string // workspace dir
-	slides   string // <root>/slides
-	metaPath string // <root>/.open-slide-mcp/decks.json
-	mu       sync.Mutex
+	root     string     // workspace dir
+	slides   string     // <root>/slides
+	builds   string     // <root>/.open-slide-mcp/builds/<id>/<hash>.js
+	metaPath string     // <root>/.open-slide-mcp/decks.json
+	mu       sync.Mutex // guards decks, current and every file write
 	decks    map[string]*Deck
+	current  map[string]Current
 	now      func() time.Time
 }
 
@@ -65,22 +64,17 @@ func Open(root string) (*Store, error) {
 	s := &Store{
 		root:     root,
 		slides:   filepath.Join(root, "slides"),
+		builds:   filepath.Join(root, ".open-slide-mcp", "builds"),
 		metaPath: filepath.Join(root, ".open-slide-mcp", "decks.json"),
 		decks:    map[string]*Deck{},
+		current:  map[string]Current{},
 		now:      time.Now,
 	}
 	if err := os.MkdirAll(s.slides, 0o755); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.metaPath), 0o755); err != nil {
+	if err := os.MkdirAll(s.builds, 0o755); err != nil {
 		return nil, err
-	}
-	// open-slide expects this manifest to exist; a mounted volume may hide the baked one.
-	manifest := filepath.Join(s.slides, ".folders.json")
-	if _, err := os.Stat(manifest); errors.Is(err, os.ErrNotExist) {
-		if err := os.WriteFile(manifest, []byte("{\n  \"folders\": [],\n  \"assignments\": {}\n}\n"), 0o644); err != nil {
-			return nil, err
-		}
 	}
 	b, err := os.ReadFile(s.metaPath)
 	switch {
@@ -111,49 +105,16 @@ func (s *Store) indexPath(id string) string {
 	return filepath.Join(s.slides, id, "index.tsx")
 }
 
-// DeckID derives the folder name from the owning thread and a deck name.
-func DeckID(threadID, name string) (string, error) {
+// Create writes a new deck folder with the given TSX. The id is a UUIDv7,
+// which is also the deck's host label, so it must stay short and plain.
+func (s *Store) Create(threadID, title, tsx string) (*Deck, string, error) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
-		return "", ErrBadThread
+		return nil, "", ErrBadThread
 	}
-	if !nameRe.MatchString(name) {
-		return "", ErrBadName
-	}
-	t := strings.Trim(slugRe.ReplaceAllString(strings.ToLower(threadID), "-"), "-")
-	if len(t) > 24 {
-		t = t[:24]
-	}
-	sum := sha256.Sum256([]byte(threadID))
-	return fmt.Sprintf("%s-%s-%s", strings.Trim(t, "-"), hex.EncodeToString(sum[:])[:6], name), nil
-}
-
-// Slugify turns a title into a deck name usable with DeckID.
-func Slugify(title string) string {
-	s := strings.Trim(slugRe.ReplaceAllString(strings.ToLower(title), "-"), "-")
-	if len(s) > 40 {
-		s = strings.Trim(s[:40], "-")
-	}
-	if s == "" {
-		s = "deck"
-	}
-	return s
-}
-
-// Create writes a new deck folder with the given TSX.
-func (s *Store) Create(threadID, name, title, tsx string) (*Deck, string, error) {
-	id, err := DeckID(threadID, name)
-	if err != nil {
-		return nil, "", err
-	}
+	id := uuid.Must(uuid.NewV7()).String()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.decks[id]; ok {
-		return nil, "", ErrExists
-	}
-	if _, err := os.Stat(filepath.Join(s.slides, id)); err == nil {
-		return nil, "", ErrExists
-	}
 	if err := os.MkdirAll(filepath.Join(s.slides, id), 0o755); err != nil {
 		return nil, "", err
 	}
@@ -161,7 +122,7 @@ func (s *Store) Create(threadID, name, title, tsx string) (*Deck, string, error)
 		return nil, "", err
 	}
 	now := s.now().UTC()
-	d := &Deck{ID: id, ThreadID: strings.TrimSpace(threadID), Title: title, CreatedAt: now, UpdatedAt: now, LastAccess: now}
+	d := &Deck{ID: id, ThreadID: threadID, Title: title, CreatedAt: now, UpdatedAt: now, LastAccess: now}
 	s.decks[id] = d
 	return clone(d), Hash(tsx), s.saveLocked()
 }
@@ -208,6 +169,49 @@ func (s *Store) Write(id, tsx, expectedHash string) (*Deck, string, error) {
 	now := s.now().UTC()
 	d.UpdatedAt, d.LastAccess = now, now
 	return clone(d), Hash(tsx), s.saveLocked()
+}
+
+// WriteBuild stores the compiled module for a deck and makes it the one the
+// deck's origin serves. Older builds are removed so an old hash cannot be
+// fetched once a new source has compiled.
+func (s *Store) WriteBuild(id string, js, srcmap []byte) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.decks[id]
+	if !ok {
+		return "", ErrNotFound
+	}
+	hash := Hash(string(js))
+	dir := filepath.Join(s.builds, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	if err := writeAtomic(filepath.Join(dir, hash+".js.map"), srcmap); err != nil {
+		return "", err
+	}
+	if err := writeAtomic(filepath.Join(dir, hash+".js"), js); err != nil {
+		return "", err
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), hash+".") {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+	d.BuildHash = hash
+	return hash, s.saveLocked()
+}
+
+// BuildPath returns the file for a deck's current module or source map and
+// its hash, or false when the deck has never compiled.
+func (s *Store) BuildPath(id, ext string) (string, string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.decks[id]
+	if !ok || d.BuildHash == "" || (ext != ".js" && ext != ".js.map") {
+		return "", "", false
+	}
+	return filepath.Join(s.builds, id, d.BuildHash+ext), d.BuildHash, true
 }
 
 // Get returns metadata for one deck.
@@ -301,7 +305,11 @@ func (s *Store) deleteLocked(id string) error {
 	if err := os.RemoveAll(filepath.Join(s.slides, id)); err != nil {
 		return err
 	}
+	if err := os.RemoveAll(filepath.Join(s.builds, id)); err != nil {
+		return err
+	}
 	delete(s.decks, id)
+	delete(s.current, id)
 	return s.saveLocked()
 }
 

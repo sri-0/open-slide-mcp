@@ -1,28 +1,38 @@
 package workspace
 
-import (
-	"encoding/json"
-	"errors"
-	"os"
-	"path/filepath"
-)
+import "time"
 
-// Current mirrors node_modules/.open-slide/current.json, the live cursor the
-// dev server writes as the user navigates in the browser.
-type Current map[string]any
+// Current is the live cursor one deck's editor last reported: which page and
+// element the user is looking at. It is kept per deck, in memory, so one
+// thread's agent only ever sees cursors for decks it can name.
+type Current struct {
+	DeckID    string         `json:"deck_id"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Data      map[string]any `json:"data"`
+}
 
-// ReadCurrent returns the cursor, or nil when the dev server has not written one.
-func (s *Store) ReadCurrent() (Current, error) {
-	b, err := os.ReadFile(filepath.Join(s.root, "node_modules", ".open-slide", "current.json"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+// SetCurrent records the cursor the browser posted for a deck.
+func (s *Store) SetCurrent(id string, data map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.decks[id]; !ok {
+		return ErrNotFound
 	}
-	if err != nil {
-		return nil, err
+	s.current[id] = Current{DeckID: id, UpdatedAt: s.now().UTC(), Data: data}
+	return nil
+}
+
+// ReadCurrent returns the newest cursor among the given decks, or nil when
+// none of them has reported one.
+func (s *Store) ReadCurrent(ids ...string) *Current {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out *Current
+	for _, id := range ids {
+		if c, ok := s.current[id]; ok && (out == nil || c.UpdatedAt.After(out.UpdatedAt)) {
+			c := c
+			out = &c
+		}
 	}
-	var c Current
-	if err := json.Unmarshal(b, &c); err != nil {
-		return nil, err
-	}
-	return c, nil
+	return out
 }
