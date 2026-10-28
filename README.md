@@ -175,7 +175,7 @@ Add to `~/.config/opencode/opencode.json` (`make opencode-config` prints it):
 | `DECK_IMPORTS_BUNDLED` | `lucide-react` | imports bundled into each deck |
 | `COMPILE_TIMEOUT` | `10s` | deadline for one compile |
 | `COMPILE_MAX_BYTES` | `262144` | largest deck source accepted |
-| `COMPILE_MAX_MEMORY` | `1073741824` | address-space limit of the compile child (Linux) |
+| `COMPILE_MAX_MEMORY` | `1073741824` | heap limit of the compile child, bytes (enforced on Linux) |
 | `EDIT_ENGINE` | `embedded` | where the editing bundle runs: `embedded` (in this process), `sidecar` (a Node process), or `none` (browser edits off) |
 | `EDIT_DEADLINE`, `EDIT_RUNTIMES`, `EDIT_MAX_STACK` | `5s`, `2`, `20000` | the embedded engine's budget per edit, interpreters kept ready, and call-stack cap |
 | `SIDECAR_DIR` | `./edits/dist` | the sidecar's bundle (`sidecar` only) |

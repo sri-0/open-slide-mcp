@@ -26,11 +26,15 @@ func Child(stdin io.Reader, stdout io.Writer) error {
 	if err := json.NewDecoder(stdin).Decode(&req); err != nil {
 		return fmt.Errorf("compile request: %w", err)
 	}
-	// Both limits are best effort: darwin accepts RLIMIT_CPU but ignores
-	// RLIMIT_AS, and a limit that cannot be set must not stop a compile
+	// The memory cap is RLIMIT_DATA, which counts committed heap, not
+	// RLIMIT_AS: a Go process reserves far more address space than it uses
+	// and dies under an address-space cap before esbuild runs. Go's own soft
+	// limit makes the collector work hard first. Both are best effort: darwin
+	// ignores them, and a limit that cannot be set must not stop a compile
 	// that the deadline in the parent still bounds.
 	if m := req.Config.MaxMemory; m > 0 {
-		syscall.Setrlimit(syscall.RLIMIT_AS, &syscall.Rlimit{Cur: uint64(m), Max: uint64(m)})
+		debug.SetMemoryLimit(m)
+		syscall.Setrlimit(syscall.RLIMIT_DATA, &syscall.Rlimit{Cur: uint64(m), Max: uint64(m)})
 	}
 	cpu := uint64(math.Ceil(req.Config.Timeout.Seconds()))
 	syscall.Setrlimit(syscall.RLIMIT_CPU, &syscall.Rlimit{Cur: cpu, Max: cpu})
