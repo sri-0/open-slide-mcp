@@ -55,12 +55,13 @@ check "a made-up deck is refused" "$(status "$fakeA/manifest.json")" 404
 # does not), so it is read from the exchange response and sent by hand.
 hdr=$(curl -s -D - -o /dev/null "${connect[@]}" "$linkA")
 check "link exchanges for a session and redirects to the editor" "$(grep -c 'HTTP/1.1 302' <<<"$hdr"),$(grep -ci '^location: .*/s/' <<<"$hdr")" "1,1"
-grep -qi 'set-cookie: __Secure-osmcp=.*Path=/.*HttpOnly.*Secure.*SameSite=None.*Partitioned' <<<"$hdr" && ok "cookie is __Secure-, path-scoped, HttpOnly, Secure, SameSite=None, Partitioned" || bad "cookie attributes: $(grep -i set-cookie <<<"$hdr")"
-cookie=$(grep -i '^set-cookie: __Secure-osmcp=' <<<"$hdr" | sed -E 's/^[Ss]et-[Cc]ookie: ([^;]+).*/\1/' | tr -d '\r')
+grep -qiE 'set-cookie: __Secure-[a-z0-9_-]+=.*Path=/.*HttpOnly.*Secure.*SameSite=None.*Partitioned' <<<"$hdr" && ok "cookie is __Secure-, path-scoped, HttpOnly, Secure, SameSite=None, Partitioned" || bad "cookie attributes: $(grep -i set-cookie <<<"$hdr")"
+cookie=$(grep -iE '^set-cookie: __Secure-' <<<"$hdr" | sed -E 's/^[Ss]et-[Cc]ookie: ([^;]+).*/\1/' | tr -d '\r')
+cookieName=${cookie%%=*}
 sessA=(-H "Cookie: $cookie")
 check "editor page opens with the session" "$(status "${sessA[@]}" "$originA/s/$deckA")" 200
 check "same link on deck B's origin is refused" "$(status "$originB/?t=$tokenA")" 403
-check "link token presented as a cookie is refused" "$(status -H "Cookie: __Secure-osmcp=$tokenA" "$originA/manifest.json")" 401
+check "link token presented as a cookie is refused" "$(status -H "Cookie: $cookieName=$tokenA" "$originA/manifest.json")" 401
 check "A's session on B's origin is refused" "$(status "${sessA[@]}" "$originB/manifest.json")" 401
 check "A's session on A's origin works" "$(status "${sessA[@]}" "$originA/manifest.json")" 200
 manifest=$(curl -s "${sessA[@]}" "${connect[@]}" "$originA/manifest.json")

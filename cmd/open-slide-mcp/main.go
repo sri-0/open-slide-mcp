@@ -51,7 +51,9 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.FromEnv()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	cfg, err := config.FromEnv(ctx)
 	if err != nil {
 		return err
 	}
@@ -61,9 +63,6 @@ func run() error {
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 	slog.SetDefault(log)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	store, err := workspace.Open(cfg.WorkspaceDir)
 	if err != nil {
@@ -87,7 +86,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	signer, err := auth.New(cfg.PreviewSecret)
+	signer, err := auth.New([]byte(cfg.PreviewSecret))
 	if err != nil {
 		return err
 	}
@@ -126,7 +125,7 @@ func run() error {
 	}
 
 	sh, err := shell.New(shell.Server{
-		Origins: origins, Dir: cfg.ShellDir, Signer: signer, LinkTTL: cfg.PreviewTTL, SessionTTL: cfg.SessionTTL,
+		Origins: origins, Dir: cfg.ShellDir, Signer: signer, Cookie: "__Secure-" + cfg.CookieName, LinkTTL: cfg.PreviewTTL, SessionTTL: cfg.SessionTTL,
 		Store: store, Events: broker, Editor: ed, EmbedOrigins: cfg.EmbedOrigins, Log: log,
 	})
 	if err != nil {

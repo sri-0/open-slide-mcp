@@ -28,17 +28,16 @@ import (
 	"github.com/sri-0/open-slide-mcp/pkg/events"
 )
 
-// cookieName carries the session token. The __Secure- prefix makes the
-// browser refuse it without Secure; it is set host-only (no Domain) on the
-// deck's base path, so it never reaches a sibling deck host or, in path
-// mode, a sibling deck's paths.
-const cookieName = "__Secure-osmcp"
-
 // Server is the handler set for deck origins.
 type Server struct {
-	Origins      Origins
-	Dir          string // built shell: index.html, assets/, favicon.*
-	Signer       *auth.Signer
+	Origins Origins
+	Dir     string // built shell: index.html, assets/, favicon.*
+	Signer  *auth.Signer
+	// Cookie names the session cookie. Its __Secure- prefix makes the
+	// browser refuse it without Secure; it is set host-only (no Domain) on
+	// the deck's base path, so it never reaches a sibling deck host or, in
+	// path mode, a sibling deck's paths.
+	Cookie       string
 	LinkTTL      time.Duration // lifetime of a preview link
 	SessionTTL   time.Duration // lifetime of the cookie a link is exchanged for
 	Store        *workspace.Store
@@ -131,7 +130,7 @@ func (s *Server) serve(c echo.Context, deck, p string) error {
 	if p == "/" && c.QueryParam("t") != "" {
 		return s.exchange(c, deck)
 	}
-	ck, err := c.Cookie(cookieName)
+	ck, err := c.Cookie(s.Cookie)
 	if err != nil {
 		return c.String(http.StatusUnauthorized, "open the deck through its preview_url first")
 	}
@@ -200,7 +199,7 @@ func (s *Server) exchange(c echo.Context, deck string) error {
 	}
 	// Partitioned: the deck is iframed by another site, so without CHIPS a
 	// browser that blocks third-party cookies would drop it.
-	c.SetCookie(&http.Cookie{Name: cookieName, Value: tok, Path: s.Origins.Base(deck), HttpOnly: true, Secure: true, SameSite: http.SameSiteNoneMode, Partitioned: true, Expires: exp})
+	c.SetCookie(&http.Cookie{Name: s.Cookie, Value: tok, Path: s.Origins.Base(deck), HttpOnly: true, Secure: true, SameSite: http.SameSiteNoneMode, Partitioned: true, Expires: exp})
 	s.Store.Touch(deck)
 	loc := s.Origins.Base(deck) + "s/" + url.PathEscape(deck)
 	if t := c.QueryParam("theme"); themes[t] {

@@ -163,6 +163,7 @@ Add to `~/.config/opencode/opencode.json` (`make opencode-config` prints it):
 | `WORKSPACE_DIR` | `./workspace` | holds `slides/`, compiled builds and the metadata index |
 | `DECK_ORIGIN` | `http://{deck}.decks.localhost:8090` | `{deck}` as the first host label (one origin per deck) or as the path, `http://localhost:8090/{deck}` (one shared origin); https unless the host is localhost |
 | `MCP_TOOLS_DISABLED` | `deck_delete` | tools that exist but are not offered to agents |
+| `COOKIE_NAME` | `osmcp` | name of the deck session cookie, served as `__Secure-<name>` |
 | `SHELL_DIR` | `./shell/dist` | the built editor |
 | `MODULES_DIR` | `./shell/node_modules` | where bundled deck imports are read from |
 | `DECK_IMPORTS_EXTERNAL` | `react,react/jsx-runtime,react/jsx-dev-runtime,@open-slide/core` | imports the shell provides |

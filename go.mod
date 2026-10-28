@@ -9,6 +9,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/sethvargo/go-envconfig v1.4.3
 )
 
 require (

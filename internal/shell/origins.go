@@ -3,8 +3,9 @@ package shell
 import (
 	"errors"
 	"net/url"
-	"regexp"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // Origins maps a deck id to the URL that serves it and back, from the
@@ -18,9 +19,6 @@ type Origins struct {
 	host   string // path mode: the shared host, lowercase; empty in host mode
 	suffix string // host mode: everything after the deck label, lowercase
 }
-
-// deckLabel is a UUID, the only shape a deck id has.
-var deckLabel = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // ParseOrigins checks the pattern once at startup.
 func ParseOrigins(pattern string) (Origins, error) {
@@ -73,7 +71,7 @@ func (o Origins) Deck(host, path string) (string, string, bool) {
 			return "", "", false
 		}
 		deck, rest, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
-		if !deckLabel.MatchString(deck) {
+		if uuid.Validate(deck) != nil {
 			return "", "", false
 		}
 		return deck, "/" + rest, true
@@ -82,7 +80,7 @@ func (o Origins) Deck(host, path string) (string, string, bool) {
 		return "", "", false
 	}
 	deck := strings.TrimSuffix(host, o.suffix)
-	if !deckLabel.MatchString(deck) {
+	if uuid.Validate(deck) != nil {
 		return "", "", false
 	}
 	return deck, path, true

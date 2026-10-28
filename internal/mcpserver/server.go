@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -35,30 +34,17 @@ func New(d Deps) (*mcp.Server, error) {
 		Instructions: instructions,
 	})
 	t := &tools{d}
-	// add registers a tool unless the operator disabled it by name.
-	add := func(name, desc string, h func(*mcp.Server)) {
-		if !slices.Contains(d.Disabled, name) {
-			h(s)
-		}
-	}
-	add("deck_create", descCreate, func(s *mcp.Server) { mcp.AddTool(s, &mcp.Tool{Name: "deck_create", Description: descCreate}, t.create) })
-	add("deck_write", descWrite, func(s *mcp.Server) { mcp.AddTool(s, &mcp.Tool{Name: "deck_write", Description: descWrite}, t.write) })
-	add("deck_read", descRead, func(s *mcp.Server) { mcp.AddTool(s, &mcp.Tool{Name: "deck_read", Description: descRead}, t.read) })
-	add("deck_list", descList, func(s *mcp.Server) { mcp.AddTool(s, &mcp.Tool{Name: "deck_list", Description: descList}, t.list) })
-	add("deck_validate", descValidate, func(s *mcp.Server) {
-		mcp.AddTool(s, &mcp.Tool{Name: "deck_validate", Description: descValidate}, t.validate)
-	})
-	add("deck_preview_url", descPreview, func(s *mcp.Server) {
-		mcp.AddTool(s, &mcp.Tool{Name: "deck_preview_url", Description: descPreview}, t.preview)
-	})
-	add("deck_current", descCurrent, func(s *mcp.Server) {
-		mcp.AddTool(s, &mcp.Tool{Name: "deck_current", Description: descCurrent}, t.current)
-	})
-	add("deck_delete", descDelete, func(s *mcp.Server) { mcp.AddTool(s, &mcp.Tool{Name: "deck_delete", Description: descDelete}, t.del) })
-	add("thread_cleanup", descCleanup, func(s *mcp.Server) {
-		mcp.AddTool(s, &mcp.Tool{Name: "thread_cleanup", Description: descCleanup}, t.cleanup)
-	})
-	add("skill_read", descSkill, func(s *mcp.Server) { mcp.AddTool(s, &mcp.Tool{Name: "skill_read", Description: descSkill}, t.skill) })
+	mcp.AddTool(s, &mcp.Tool{Name: "deck_create", Description: descCreate}, t.create)
+	mcp.AddTool(s, &mcp.Tool{Name: "deck_write", Description: descWrite}, t.write)
+	mcp.AddTool(s, &mcp.Tool{Name: "deck_read", Description: descRead}, t.read)
+	mcp.AddTool(s, &mcp.Tool{Name: "deck_list", Description: descList}, t.list)
+	mcp.AddTool(s, &mcp.Tool{Name: "deck_validate", Description: descValidate}, t.validate)
+	mcp.AddTool(s, &mcp.Tool{Name: "deck_preview_url", Description: descPreview}, t.preview)
+	mcp.AddTool(s, &mcp.Tool{Name: "deck_current", Description: descCurrent}, t.current)
+	mcp.AddTool(s, &mcp.Tool{Name: "deck_delete", Description: descDelete}, t.del)
+	mcp.AddTool(s, &mcp.Tool{Name: "thread_cleanup", Description: descCleanup}, t.cleanup)
+	mcp.AddTool(s, &mcp.Tool{Name: "skill_read", Description: descSkill}, t.skill)
+	s.RemoveTools(d.Disabled...)
 	if err := registerSkills(s); err != nil {
 		return nil, err
 	}

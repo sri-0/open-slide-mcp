@@ -126,7 +126,7 @@ func main() {
 	resp = get(link)
 	resp.Body.Close()
 	for _, c := range resp.Cookies() {
-		if c.Name == "__Secure-osmcp" {
+		if strings.HasPrefix(c.Name, "__Secure-") {
 			session = c
 		}
 	}
