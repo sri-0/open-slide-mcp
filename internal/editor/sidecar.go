@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/sri-0/open-slide-mcp/pkg/edits"
 )
 
 // Sidecar is the Node engine: a parse-only process that it runs and
@@ -35,24 +37,24 @@ func NewSidecar(dir, addr string, log *slog.Logger) *Sidecar {
 }
 
 // Apply posts the request to the sidecar's /apply.
-func (s *Sidecar) Apply(ctx context.Context, in Request) (Response, error) {
+func (s *Sidecar) Apply(ctx context.Context, in edits.Request) (edits.Response, error) {
 	body, err := json.Marshal(in)
 	if err != nil {
-		return Response{}, err
+		return edits.Response{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+s.Addr+"/apply", bytes.NewReader(body))
 	if err != nil {
-		return Response{}, err
+		return edits.Response{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return Response{}, fmt.Errorf("sidecar: %w", err)
+		return edits.Response{}, fmt.Errorf("sidecar: %w", err)
 	}
 	defer resp.Body.Close()
-	var out Response
+	var out edits.Response
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&out); err != nil || resp.StatusCode != http.StatusOK {
-		return Response{}, fmt.Errorf("sidecar returned %d: %w", resp.StatusCode, errors.Join(err, errors.New("unreadable response")))
+		return edits.Response{}, fmt.Errorf("sidecar returned %d: %w", resp.StatusCode, errors.Join(err, errors.New("unreadable response")))
 	}
 	return out, nil
 }

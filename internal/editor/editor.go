@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,36 +18,21 @@ import (
 
 	"github.com/sri-0/open-slide-mcp/internal/build"
 	"github.com/sri-0/open-slide-mcp/internal/shell"
+	"github.com/sri-0/open-slide-mcp/pkg/edits"
 )
 
 // Editor is the http.Handler the shell mounts under /__.
 type Editor struct {
 	Build build.Builder
-	Apply Applier // the engine that patches source: the Node sidecar or the embedded interpreter
+	Apply Applier // the engine that patches source: the embedded interpreter or the Node sidecar
 	Log   *slog.Logger
 }
 
 // Applier applies one editor request to a deck's source. Both engines run
-// open-slide's own editing functions on the same bundle; they differ only
+// open-slide's own editing functions from the same bundle; they differ only
 // in where that JavaScript runs.
 type Applier interface {
-	Apply(ctx context.Context, req Request) (Response, error)
-}
-
-// Request is one editor save call with the source it applies to.
-type Request struct {
-	Method string            `json:"method"`
-	Path   string            `json:"path"`
-	Query  map[string]string `json:"query"`
-	Body   json.RawMessage   `json:"body"`
-	Source string            `json:"source"`
-}
-
-// Response is what the browser receives, plus the new source when it changed.
-type Response struct {
-	Status int             `json:"status"`
-	Body   json.RawMessage `json:"body"`
-	Source string          `json:"source,omitempty"`
+	Apply(ctx context.Context, req edits.Request) (edits.Response, error)
 }
 
 // ServeHTTP answers the routes the editor UI calls. Routes that touched the
@@ -101,7 +87,12 @@ func (e *Editor) apply(w http.ResponseWriter, r *http.Request, deck string) erro
 	// The browser addresses the deck by the id it sees; the sidecar only
 	// ever receives the source of the deck the session is for.
 	q["slideId"] = deck
-	out, err := e.Apply.Apply(r.Context(), Request{Method: r.Method, Path: r.URL.Path, Query: q, Body: body, Source: src})
+	out, err := e.Apply.Apply(r.Context(), edits.Request{Method: r.Method, Path: r.URL.Path, Query: q, Body: body, Source: src})
+	if errors.Is(err, edits.ErrDeadline) || errors.Is(err, edits.ErrTooDeep) {
+		// What upstream answers when Babel gives up on a source.
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "could not parse source"})
+		return nil
+	}
 	if err != nil {
 		return err
 	}

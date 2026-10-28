@@ -3,28 +3,31 @@ VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev
 IMAGE    ?= open-slide-mcp:local
 PORT     ?= 8090
 
-.PHONY: setup shell sidecar build run test lint docker-build docker-run docker-stop smoke isolation opencode-config clean
+.PHONY: setup shell edits build run test lint docker-build docker-run docker-stop smoke isolation opencode-config clean
 
-## setup: install the shell and sidecar dependencies (needs Node 22+ and pnpm)
+## setup: install the shell and edits dependencies (needs Node 22+ and pnpm)
 setup:
 	cd shell && pnpm install --frozen-lockfile
-	cd sidecar && pnpm install --frozen-lockfile
+	cd edits && pnpm install --frozen-lockfile
 
 ## shell: build the open-slide editor once into shell/dist
 shell:
 	cd shell && pnpm build
 
-## sidecar: fetch open-slide's editing sources at the shell's pinned version and bundle sidecar/dist/server.js
-sidecar:
-	cd sidecar && pnpm upstream && pnpm build
+## edits: fetch open-slide's editing sources at the shell's pinned version, then bundle them for the Go binary (pkg/edits/apply.js) and the Node sidecar (edits/dist/server.js)
+edits:
+	cd edits && pnpm upstream && pnpm build
 
-## build: compile the wrapper binary
-build:
+## build: compile the wrapper binary; the embedded editing bundle is built first when missing
+build: pkg/edits/apply.js
 	CGO_ENABLED=0 go build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/open-slide-mcp
+
+pkg/edits/apply.js:
+	cd edits && pnpm upstream && pnpm build:embedded
 
 ## run: run the wrapper locally; decks are served on http://<deck>.decks.localhost:$(PORT)
 run: build
-	WORKSPACE_DIR=./workspace SHELL_DIR=./shell/dist MODULES_DIR=./shell/node_modules SIDECAR_DIR=./sidecar/dist \
+	WORKSPACE_DIR=./workspace SHELL_DIR=./shell/dist MODULES_DIR=./shell/node_modules SIDECAR_DIR=./edits/dist \
 	DECK_ORIGIN=$${DECK_ORIGIN:-http://{deck}.decks.localhost:$(PORT)} EMBED_ORIGINS=$${EMBED_ORIGINS:-http://localhost:3000} \
 	LISTEN_ADDR=:$(PORT) LOG_LEVEL=$${LOG_LEVEL:-info} $(BIN)
 
@@ -66,4 +69,4 @@ opencode-config:
 	@printf '  "open-slide": {\n    "type": "remote",\n    "url": "http://localhost:$(PORT)/mcp",\n    "enabled": true\n  }\n'
 
 clean:
-	rm -rf bin shell/dist sidecar/dist sidecar/upstream
+	rm -rf bin shell/dist edits/dist edits/upstream pkg/edits/apply.js

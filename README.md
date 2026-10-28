@@ -45,10 +45,15 @@ browser / iframe ------------- preview link ---------> http://<deck-id>.decks.lo
   token is never accepted as a cookie, nor a cookie as a link, and writes on a
   deck origin are accepted only from the deck's own page.
 - **Edits without a dev server.** The editor's save routes are served by Go.
-  Source patches (visual edits, comments, notes, design, page order) go to a
-  parse-only Node sidecar that runs open-slide's own Babel edit functions on
-  the text under Node's permission model, with no filesystem or network access
-  beyond its bundle. Go writes the result, recompiles and notifies open editors.
+  Source patches (visual edits, comments, notes, design, page order) are
+  applied by open-slide's own Babel editing functions, bundled once by esbuild
+  from the sources fetched at the pinned version. `EDIT_ENGINE` says where that
+  JavaScript runs: `embedded` (the default) runs it inside the Go process with
+  goja, a JavaScript interpreter written in Go, under a deadline and a stack
+  cap, so no Node is needed at runtime; `sidecar` runs the same bundle in a
+  parse-only Node process under Node's permission model. Either way the deck
+  source is only data to the parser; Go writes the result, recompiles and
+  notifies open editors.
 
 ## Tools
 
@@ -89,9 +94,9 @@ plan, not something this server can check.
 Needs Go 1.25, Node 22+ and pnpm.
 
 ```
-make setup     # pnpm install in shell/ and sidecar/
+make setup     # pnpm install in shell/ and edits/
 make shell     # build the editor once into shell/dist
-make sidecar   # bundle the sidecar into sidecar/dist/server.js
+make edits     # fetch the editing sources and bundle them for the binary and the sidecar
 make run       # :8090, decks on http://<deck>.decks.localhost:8090 (DECK_ORIGIN overrides)
 make smoke     # drives every tool and opens a preview
 make isolation # curl proof: tokens, cookies, cross-deck refusals, compiler limits, editor round trip
@@ -171,8 +176,10 @@ Add to `~/.config/opencode/opencode.json` (`make opencode-config` prints it):
 | `COMPILE_TIMEOUT` | `10s` | deadline for one compile |
 | `COMPILE_MAX_BYTES` | `262144` | largest deck source accepted |
 | `COMPILE_MAX_MEMORY` | `1073741824` | address-space limit of the compile child (Linux) |
-| `SIDECAR_DIR` | empty | the built sidecar; empty disables browser edits |
-| `SIDECAR_ADDR` | `127.0.0.1:8091` | loopback address the sidecar listens on |
+| `EDIT_ENGINE` | `embedded` | where the editing bundle runs: `embedded` (in this process), `sidecar` (a Node process), or `none` (browser edits off) |
+| `EDIT_DEADLINE`, `EDIT_RUNTIMES`, `EDIT_MAX_STACK` | `5s`, `2`, `20000` | the embedded engine's budget per edit, interpreters kept ready, and call-stack cap |
+| `SIDECAR_DIR` | `./edits/dist` | the sidecar's bundle (`sidecar` only) |
+| `SIDECAR_ADDR` | `127.0.0.1:8091` | loopback address the sidecar listens on (`sidecar` only) |
 | `PREVIEW_SECRET` | random | HMAC key for deck tokens; set it for stable links across restarts |
 | `PREVIEW_TTL` | `12h` | lifetime of a preview link |
 | `SESSION_TTL` | `168h` | lifetime of the session cookie a link is exchanged for |
@@ -184,13 +191,13 @@ Add to `~/.config/opencode/opencode.json` (`make opencode-config` prints it):
 
 `shell/package.json` pins `@open-slide/core` (currently 2.2.0), and that one
 version drives everything: the shell is built from the installed package, and
-`make sidecar` fetches the matching repository tag for the editing functions
-the package does not export (the list is in `sidecar/fetch-upstream.mjs`; a
+`make edits` fetches the matching repository tag for the editing functions
+the package does not export (the list is in `edits/fetch-upstream.mjs`; a
 file that moves upstream fails the fetch). To move to a newer release:
 
 ```
 cd shell && pnpm up "@open-slide/core@<version>" && cd ..
-make shell sidecar
+make shell edits build
 cd shell && pnpm sync:skills && rsync -a --delete .agents/skills/ ../internal/skills/data/
 ```
 

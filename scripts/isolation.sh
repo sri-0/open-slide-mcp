@@ -115,7 +115,7 @@ if [ "$(status "${sessA[@]}" "$originA/__server-status")" = 200 ]; then
   cur=$(tool deck_current "{\"deck_id\":\"$deckA\"}")
   check "cursor posted from the editor is per deck" "$(field "$cur" '["current"]["deck_id"]')" "$deckA"
 else
-  echo "SKIP  editing is off (SIDECAR_DIR unset)"
+  echo "SKIP  editing is off (EDIT_ENGINE=none)"
 fi
 
 echo "== limits =="
@@ -126,6 +126,10 @@ w=$(tool deck_write "$huge")
 check "an 800 KB pathological deck is refused, not compiled" "$(field "$w" '["validation"]["ok"]')" False
 echo "  message: $(field "$w" '["validation"]["message"]')"
 check "the server is still healthy" "$(status "$base/healthz")" 200
+if [ "$(status "${sessA[@]}" "$originA/__server-status")" = 200 ]; then
+  edit='{"slideId":"'"$deckA"'","line":1,"column":0,"ops":[{"kind":"set-style","key":"color","value":"red"}]}'
+  check "an edit on a deck that cannot be parsed is a 422" "$(status "${sessA[@]}" -X POST -H "Origin: $siteA" -H 'content-type: application/json' -d "$edit" "$originA/__edit")" 422
+fi
 
 echo "== mcp gate =="
 if [ "$(curl -s -o /dev/null -w '%{http_code}' "$base/mcp" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"deck_list","arguments":{}}}')" = 401 ]; then

@@ -1,4 +1,13 @@
-# Sidecar
+# edits
+
+open-slide's editor save routes as one pure function, `apply(request) ->
+response`, built two ways from the same sources: `pnpm build:embedded` writes
+`../pkg/edits/apply.js`, which the Go binary embeds and runs with goja (the
+default `EDIT_ENGINE=embedded`); `pnpm build:sidecar` writes `dist/server.js`,
+a loopback Node server for `EDIT_ENGINE=sidecar`. The embedded bundle adds a
+small `Buffer` polyfill and a `crypto.randomUUID` shim (`src/embedded/`), and
+was proven byte-identical to Node over 1,124 request pairs.
+
 
 A parse-only Node process that applies the open-slide editor's source patches. The browser
 editor saves visual edits as requests such as `POST /__edit {slideId, line, column, ops}`,
@@ -59,7 +68,7 @@ file), the origin and content-type guard (`403`/`415`), and the directory routes
 ```sh
 pnpm install
 pnpm upstream  # downloads the open-slide sources at the version shell/package.json pins into upstream/ (not committed)
-pnpm build     # esbuild bundles src/server.ts and upstream/ into dist/server.js (one file, sourcemap)
+pnpm build     # both bundles: ../pkg/edits/apply.js for the Go binary and dist/server.js for the sidecar
 pnpm start     # node --permission --allow-fs-read=./dist dist/server.js
 ```
 

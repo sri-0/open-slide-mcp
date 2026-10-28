@@ -29,6 +29,7 @@ import (
 	"github.com/sri-0/open-slide-mcp/internal/workspace"
 	"github.com/sri-0/open-slide-mcp/pkg/auth"
 	"github.com/sri-0/open-slide-mcp/pkg/compile"
+	"github.com/sri-0/open-slide-mcp/pkg/edits"
 	"github.com/sri-0/open-slide-mcp/pkg/events"
 )
 
@@ -94,7 +95,15 @@ func run() error {
 	builder := build.Builder{Store: store, Compiler: comp, Events: broker}
 
 	var ed http.Handler
-	if cfg.SidecarDir != "" {
+	switch cfg.EditEngine {
+	case "embedded":
+		eng, err := edits.New(edits.Config{Runtimes: cfg.EditRuntimes, Deadline: cfg.EditDeadline, MaxStack: cfg.EditMaxStack})
+		if err != nil {
+			return err
+		}
+		ed = &editor.Editor{Build: builder, Apply: eng, Log: log}
+		log.Info("editing enabled", "engine", "embedded", "runtimes", cfg.EditRuntimes)
+	case "sidecar":
 		sc := editor.NewSidecar(cfg.SidecarDir, cfg.SidecarAddr, log)
 		done := make(chan struct{})
 		go func() {
@@ -115,9 +124,9 @@ func run() error {
 			return err
 		}
 		ed = &editor.Editor{Build: builder, Apply: sc, Log: log}
-		log.Info("editing enabled", "sidecar", cfg.SidecarAddr)
-	} else {
-		log.Warn("SIDECAR_DIR is empty: decks are viewable but browser edits are off")
+		log.Info("editing enabled", "engine", "sidecar", "addr", cfg.SidecarAddr)
+	default:
+		log.Warn("EDIT_ENGINE is none: decks are viewable but browser edits are off")
 	}
 
 	sh, err := shell.New(shell.Server{

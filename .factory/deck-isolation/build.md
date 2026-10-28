@@ -57,3 +57,12 @@ Static checks after the fixes: gofmt, go vet, staticcheck clean; `pnpm exec tsc 
 
 - Shareable code moved under `pkg/`: `pkg/compile` (the esbuild child and allow list, which imports nothing from `internal/`), `pkg/events` (the SSE broker) and `pkg/auth` (deck tokens, the OIDC bearer gate). `internal/` keeps what is specific to this service: `build`, `config`, `editor`, `mcpserver`, `shell`, `skills`, `workspace`. The compiler is reached from the MCP tools only through `internal/build`.
 - The sidecar no longer vendors open-slide's editing sources. `pnpm upstream` (`sidecar/fetch-upstream.mjs`) downloads the repository tag matching the version `shell/package.json` pins into the gitignored `sidecar/upstream/`, naming each of the 15 files it takes, and fails if one has moved. One version bump upgrades the shell and the sidecar together.
+
+## Editing engines (29 October 2026, later)
+
+The owner asked why a Node process was needed at all. It existed only to run open-slide's editing functions (Babel source patches) for the editor's save routes. Two options now exist, chosen by `EDIT_ENGINE`:
+
+- `embedded` (default): the same bundle runs inside the Go binary with goja, a JavaScript interpreter in Go (`pkg/edits`), with a per-call deadline and a stack cap; nothing in Node at runtime. A differential test of 1,124 request pairs against Node was identical except one lone-surrogate escape that Go's JSON decoder normalises anyway; a 294-line deck edit takes about 70 ms, a 2,000-line one about 630 ms.
+- `sidecar`: the same bundle in a Node process under `--permission` (`internal/editor/sidecar.go`).
+
+The `sidecar/` project became `edits/`, which fetches the upstream sources at the pinned version and builds both bundles; `pkg/edits/apply.js` is built, embedded and gitignored. A whole-file write from the browser was considered and rejected: it would let any deck viewer write arbitrary TSX, where patches only change text, styles, comments, notes, design and page order. The module moved to Go 1.26, which goja requires.

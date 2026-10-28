@@ -47,8 +47,15 @@ type Config struct {
 	CompileMaxBytes  int64         `env:"COMPILE_MAX_BYTES,default=262144"`      // largest deck source accepted
 	CompileMaxMemory int64         `env:"COMPILE_MAX_MEMORY,default=1073741824"` // address-space limit of the compile child, in bytes
 
-	SidecarDir  string `env:"SIDECAR_DIR"`                         // built editing sidecar; empty disables the editor's save routes
-	SidecarAddr string `env:"SIDECAR_ADDR,default=127.0.0.1:8091"` // loopback address the sidecar listens on
+	// EditEngine runs the editor's save logic: "embedded" (open-slide's
+	// editing bundle inside this process) or "sidecar" (the same bundle in a
+	// Node process at SidecarAddr); "none" turns browser edits off.
+	EditEngine   string        `env:"EDIT_ENGINE,default=embedded"`
+	EditDeadline time.Duration `env:"EDIT_DEADLINE,default=5s"`            // budget for one embedded edit
+	EditRuntimes int           `env:"EDIT_RUNTIMES,default=2"`             // embedded interpreters kept ready
+	EditMaxStack int           `env:"EDIT_MAX_STACK,default=20000"`        // embedded call-stack limit
+	SidecarDir   string        `env:"SIDECAR_DIR,default=./edits/dist"`    // the sidecar's bundle
+	SidecarAddr  string        `env:"SIDECAR_ADDR,default=127.0.0.1:8091"` // loopback address the sidecar listens on
 
 	PreviewSecret string        `env:"PREVIEW_SECRET"`             // HMAC key for deck tokens; random when unset
 	PreviewTTL    time.Duration `env:"PREVIEW_TTL,default=12h"`    // lifetime of a preview link
@@ -110,13 +117,20 @@ func (c *Config) check() error {
 			return fmt.Errorf("DECK_IMPORTS_BUNDLED: %s is not installed under MODULES_DIR %s (run make shell)", p, c.ModulesDir)
 		}
 	}
-	if c.SidecarDir != "" {
+	switch c.EditEngine {
+	case "embedded", "none":
+	case "sidecar":
 		if c.SidecarDir, err = filepath.Abs(c.SidecarDir); err != nil {
 			return fmt.Errorf("SIDECAR_DIR: %w", err)
 		}
 		if _, err := os.Stat(filepath.Join(c.SidecarDir, "server.js")); err != nil {
-			return fmt.Errorf("SIDECAR_DIR %s has no server.js (run make sidecar): %w", c.SidecarDir, err)
+			return fmt.Errorf("SIDECAR_DIR %s has no server.js (run make edits): %w", c.SidecarDir, err)
 		}
+	default:
+		return fmt.Errorf("EDIT_ENGINE must be embedded, sidecar or none, got %q", c.EditEngine)
+	}
+	if c.EditDeadline <= 0 || c.EditRuntimes <= 0 || c.EditMaxStack <= 0 {
+		return errors.New("EDIT_DEADLINE, EDIT_RUNTIMES and EDIT_MAX_STACK must be positive")
 	}
 	if c.CompileTimeout <= 0 || c.CompileMaxBytes <= 0 {
 		return errors.New("COMPILE_TIMEOUT and COMPILE_MAX_BYTES must be positive")

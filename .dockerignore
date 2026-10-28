@@ -7,6 +7,7 @@ workspace/slides/*
 workspace/.open-slide-mcp
 shell/node_modules
 shell/dist
-sidecar/node_modules
-sidecar/dist
-sidecar/upstream
+edits/node_modules
+edits/dist
+edits/upstream
+pkg/edits/apply.js
